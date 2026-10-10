@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import io
 from datetime import datetime, timezone, timedelta
 from html import escape
 from zoneinfo import ZoneInfo
@@ -61,7 +62,7 @@ MSK = ZoneInfo("Europe/Moscow")
 NICKNAME_PATTERN = re.compile(r"^.+\s+#\d+$")
 
 
-def is_valid_steam_id(raw_input: str) -> bool:
+def is_valid_steam_id(raw_input: str) -&gt; bool:
     s = raw_input.strip()
     if any(bad in s.lower() for bad in ["http://", "https://", "steamcommunity.com", "/", "\\", "?", "#"]):
         return False
@@ -69,7 +70,7 @@ def is_valid_steam_id(raw_input: str) -> bool:
     return bool(pattern.match(s))
 
 
-def esc(value) -> str:
+def esc(value) -&gt; str:
     return escape(str(value if value is not None else ""))
 
 
@@ -231,7 +232,7 @@ async def init_pool():
 _whitelist_lock = asyncio.Lock()
 
 
-async def _get_whitelist_ids() -> list[str]:
+async def _get_whitelist_ids() -&gt; list[str]:
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -239,18 +240,18 @@ async def _get_whitelist_ids() -> list[str]:
             FROM players p
             WHERE p.team_chat_id IS NOT NULL
               AND p.steam_id IS NOT NULL
-              AND p.steam_id <> ''
+              AND p.steam_id &lt;&gt; ''
               AND NOT EXISTS (
                   SELECT 1 FROM bans b
                   WHERE b.tg_id = p.tg_id
-                    AND (b.until IS NULL OR b.until > NOW())
+                    AND (b.until IS NULL OR b.until &gt; NOW())
               )
             """
         )
     return sorted({r["steam_id"] for r in rows})
 
 
-async def _push_to_gist(content: str) -> tuple[bool, str]:
+async def _push_to_gist(content: str) -&gt; tuple[bool, str]:
     if not GITHUB_TOKEN or not GIST_ID:
         return False, "GITHUB_TOKEN или GIST_ID не задан"
 
@@ -314,6 +315,16 @@ async def add_chat(chat_id: int, name: str, league: str):
         )
 
 
+async def delete_chat_db(chat_id: int):
+    async with _pool.acquire() as conn:
+        await conn.execute("UPDATE players SET team_chat_id = NULL WHERE team_chat_id = $1", chat_id)
+        await conn.execute("DELETE FROM player_chats WHERE chat_id = $1", chat_id)
+        await conn.execute("DELETE FROM channel_chats WHERE chat_id = $1", chat_id)
+        await conn.execute("DELETE FROM matches WHERE team_home_chat_id = $1 OR team_away_chat_id = $1", chat_id)
+        await conn.execute("DELETE FROM chats WHERE chat_id = $1", chat_id)
+    asyncio.create_task(rebuild_whitelist_file())
+
+
 async def get_chats(league: str | None = None):
     async with _pool.acquire() as conn:
         if league:
@@ -360,7 +371,7 @@ async def get_all_captain_chats():
         return await conn.fetch("SELECT * FROM captain_chats")
 
 
-async def is_player_captain(bot: Bot, tg_id: int, league: str) -> bool:
+async def is_player_captain(bot: Bot, tg_id: int, league: str) -&gt; bool:
     cap_row = await get_captain_chat(league)
     if not cap_row:
         return False
@@ -469,7 +480,7 @@ async def add_match(team_home_chat_id, team_home_name, team_away_chat_id, team_a
 async def get_upcoming_matches():
     async with _pool.acquire() as conn:
         return await conn.fetch(
-            "SELECT * FROM matches WHERE match_time > NOW() - INTERVAL '2 hours' ORDER BY match_time"
+            "SELECT * FROM matches WHERE match_time &gt; NOW() - INTERVAL '2 hours' ORDER BY match_time"
         )
 
 
@@ -487,8 +498,8 @@ async def get_matches_due_for(minutes_before: int, column: str):
     query = f"""
         SELECT * FROM matches
         WHERE {column} = FALSE
-          AND match_time - (INTERVAL '1 minute' * $1) <= NOW()
-          AND match_time > NOW() - INTERVAL '30 minutes'
+          AND match_time - (INTERVAL '1 minute' * $1) &lt;= NOW()
+          AND match_time &gt; NOW() - INTERVAL '30 minutes'
     """
     async with _pool.acquire() as conn:
         return await conn.fetch(query, minutes_before)
@@ -602,25 +613,25 @@ async def remove_player_chat(tg_id: int, chat_id: int):
         await conn.execute("DELETE FROM player_chats WHERE tg_id = $1 AND chat_id = $2", tg_id, chat_id)
 
 
-async def get_player_chat_ids(tg_id: int) -> list[int]:
+async def get_player_chat_ids(tg_id: int) -&gt; list[int]:
     async with _pool.acquire() as conn:
         rows = await conn.fetch("SELECT chat_id FROM player_chats WHERE tg_id = $1", tg_id)
         return [r["chat_id"] for r in rows]
 
 
-async def get_linked_player_ids(chat_id: int) -> set[int]:
+async def get_linked_player_ids(chat_id: int) -&gt; set[int]:
     async with _pool.acquire() as conn:
         rows = await conn.fetch("SELECT tg_id FROM player_chats WHERE chat_id = $1", chat_id)
         return {r["tg_id"] for r in rows}
 
 
-async def get_all_known_player_ids() -> list[int]:
+async def get_all_known_player_ids() -&gt; list[int]:
     async with _pool.acquire() as conn:
         rows = await conn.fetch("SELECT tg_id FROM players")
         return [r["tg_id"] for r in rows]
 
 
-async def get_unlinked_steam_in_teams() -> list[dict]:
+async def get_unlinked_steam_in_teams() -&gt; list[dict]:
     async with _pool.acquire() as conn:
         return await conn.fetch(
             """
@@ -673,13 +684,13 @@ async def get_active_ban(tg_id: int, league: str | None = None):
             return await conn.fetchrow(
                 """
                 SELECT * FROM bans 
-                WHERE tg_id = $1 AND (league = $2 OR league = 'ALL') AND (until IS NULL OR until > NOW()) 
+                WHERE tg_id = $1 AND (league = $2 OR league = 'ALL') AND (until IS NULL OR until &gt; NOW()) 
                 ORDER BY id DESC LIMIT 1
                 """,
                 tg_id, league,
             )
         return await conn.fetchrow(
-            "SELECT * FROM bans WHERE tg_id = $1 AND (until IS NULL OR until > NOW()) ORDER BY id DESC LIMIT 1",
+            "SELECT * FROM bans WHERE tg_id = $1 AND (until IS NULL OR until &gt; NOW()) ORDER BY id DESC LIMIT 1",
             tg_id,
         )
 
@@ -689,7 +700,7 @@ async def get_active_bans():
         return await conn.fetch(
             """
             SELECT * FROM bans
-            WHERE (until IS NULL OR until > NOW())
+            WHERE (until IS NULL OR until &gt; NOW())
             ORDER BY id DESC
             """
         )
@@ -708,7 +719,7 @@ async def remove_exception_db(tg_id: int):
         await conn.execute("DELETE FROM exceptions WHERE tg_id = $1", tg_id)
 
 
-async def is_exception(tg_id: int) -> bool:
+async def is_exception(tg_id: int) -&gt; bool:
     async with _pool.acquire() as conn:
         val = await conn.fetchval("SELECT 1 FROM exceptions WHERE tg_id = $1", tg_id)
         return bool(val)
@@ -805,50 +816,50 @@ async def delete_captain_application_by_id(app_id: int):
 #                    ТЕКСТЫ СООБЩЕНИЙ
 # =========================================================
 
-def reminder_45_text(team_home: str, team_away: str) -> str:
+def reminder_45_text(team_home: str, team_away: str) -&gt; str:
     return (
-        "⏰ <b>Внимание, до матча осталось 45 минут!</b>\n"
+        "⏰ &lt;b&gt;Внимание, до матча осталось 45 минут!&lt;/b&gt;\n"
         "Не забудьте прийти! 🙌\n\n"
-        f"🆚 <b>{esc(team_home)}</b> — <b>{esc(team_away)}</b>"
+        f"🆚 &lt;b&gt;{esc(team_home)}&lt;/b&gt; — &lt;b&gt;{esc(team_away)}&lt;/b&gt;"
     )
 
 
-def raskatka_text(server_name, server_ip, server_port, server_password, team_home, team_away, color) -> str:
+def raskatka_text(server_name, server_ip, server_port, server_password, team_home, team_away, color) -&gt; str:
     return (
-        "🎮 <b>Калл! Раскатка!</b>\n\n"
-        f"🖥 <b>{esc(server_name)}</b>\n"
-        f"🌐 IP сервера: <code>{esc(server_ip)}</code>\n"
-        f"🔌 Port сервера: <code>{esc(server_port)}</code>\n"
-        f"🔑 Password сервера: <code>{esc(server_password)}</code>\n\n"
-        f"👉 Вы <b>{color}</b>.\n\n"
+        "🎮 &lt;b&gt;Калл! Раскатка!&lt;/b&gt;\n\n"
+        f"🖥 &lt;b&gt;{esc(server_name)}&lt;/b&gt;\n"
+        f"🌐 IP сервера: &lt;code&gt;{esc(server_ip)}&lt;/code&gt;\n"
+        f"🔌 Port сервера: &lt;code&gt;{esc(server_port)}&lt;/code&gt;\n"
+        f"🔑 Password сервера: &lt;code&gt;{esc(server_password)}&lt;/code&gt;\n\n"
+        f"👉 Вы &lt;b&gt;{color}&lt;/b&gt;.\n\n"
         "ℹ️ Составы по цветам:\n"
         f"🔴 Хозяева (ред) — {esc(team_home)}\n"
         f"🔵 Гости (блу) — {esc(team_away)}"
     )
 
 
-async def build_profile_text(player) -> str:
-    nickname = f"<code>{esc(player['nickname'])}</code>" if player["nickname"] else "❌ <i>не указан (формат: Nick #00)</i>"
-    steam_id = f"<code>{esc(player['steam_id'])}</code>" if player["steam_id"] else "❌ <i>не привязан</i>"
+async def build_profile_text(player) -&gt; str:
+    nickname = f"&lt;code&gt;{esc(player['nickname'])}&lt;/code&gt;" if player["nickname"] else "❌ &lt;i&gt;не указан (формат: Nick #00)&lt;/i&gt;"
+    steam_id = f"&lt;code&gt;{esc(player['steam_id'])}&lt;/code&gt;" if player["steam_id"] else "❌ &lt;i&gt;не привязан&lt;/i&gt;"
 
     if player["team_chat_id"]:
         chat = await get_chat(player["team_chat_id"])
         logo = f"{chat['logo_emoji']} " if chat and chat["logo_emoji"] else ""
         league_badge = f" [{chat['league']}]" if chat else ""
-        team_name = f"{logo}<b>{esc(chat['name'])}</b>{league_badge}" if chat else "🆓 Free Agent"
+        team_name = f"{logo}&lt;b&gt;{esc(chat['name'])}&lt;/b&gt;{league_badge}" if chat else "🆓 Free Agent"
     else:
         team_name = "🆓 Free Agent"
 
     username = f"@{esc(player['username'])}" if player["username"] else "—"
 
     return (
-        "🏒 <b>Профиль игрока RPL / FPHL</b>\n"
+        "🏒 &lt;b&gt;Профиль игрока RPL / FPHL&lt;/b&gt;\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🏷 <b>Никнейм и Номер:</b> {nickname}\n"
-        f"🎮 <b>SteamID:</b> {steam_id}\n"
-        f"🛡 <b>Команда:</b> {team_name}\n"
-        f"💬 <b>Telegram:</b> {username}\n\n"
-        "<i>Для игр в лигах необходимо заполнить никнейм с номером и привязать SteamID!</i>"
+        f"🏷 &lt;b&gt;Никнейм и Номер:&lt;/b&gt; {nickname}\n"
+        f"🎮 &lt;b&gt;SteamID:&lt;/b&gt; {steam_id}\n"
+        f"🛡 &lt;b&gt;Команда:&lt;/b&gt; {team_name}\n"
+        f"💬 &lt;b&gt;Telegram:&lt;/b&gt; {username}\n\n"
+        "&lt;i&gt;Для игр в лигах необходимо заполнить никнейм с номером и привязать SteamID!&lt;/i&gt;"
     )
 
 
@@ -884,6 +895,11 @@ class AddMatch(StatesGroup):
     waiting_team2 = State()
     waiting_datetime = State()
     waiting_server = State()
+
+
+class AddMatchesFile(StatesGroup):
+    waiting_server = State()
+    waiting_file = State()
 
 
 class AddChannel(StatesGroup):
@@ -935,16 +951,18 @@ class ApplyCaptain(StatesGroup):
 #                       КЛАВИАТУРЫ
 # =========================================================
 
-def admin_main_menu() -> InlineKeyboardMarkup:
+def admin_main_menu() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📢 Открыть набор капитанов", callback_data="adm:open_captains")
     kb.button(text="📂 Заявки капитанов", callback_data="adm:cap_apps:0")
     kb.button(text="➕ Добавить команду", callback_data="adm:add_chat")
+    kb.button(text="🗑 Удалить команду", callback_data="adm:del_chat_menu")
     kb.button(text="👑 Чаты капитанов", callback_data="adm:captains_menu")
     kb.button(text="📋 Список команд", callback_data="adm:list_chats")
     kb.button(text="👥 Все игроки", callback_data="adm:all_players:0")
     kb.button(text="✏️ Ред. команду", callback_data="adm:edit_chat")
     kb.button(text="🆚 Добавить матч", callback_data="adm:add_match")
+    kb.button(text="📂 Добавление матчей (файл)", callback_data="adm:add_matches_file")
     kb.button(text="📅 Список матчей", callback_data="adm:list_matches")
     kb.button(text="🖥 Добавить сервер", callback_data="adm:add_server")
     kb.button(text="🗄 Список серверов", callback_data="adm:list_servers")
@@ -960,7 +978,7 @@ def admin_main_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def league_choice_kb(prefix: str) -> InlineKeyboardMarkup:
+def league_choice_kb(prefix: str) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🏆 RPL", callback_data=f"{prefix}:RPL")
     kb.button(text="🏒 FPHL", callback_data=f"{prefix}:FPHL")
@@ -969,7 +987,7 @@ def league_choice_kb(prefix: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def ban_league_choice_kb() -> InlineKeyboardMarkup:
+def ban_league_choice_kb() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🏆 Только RPL", callback_data="banleague:RPL")
     kb.button(text="🏒 Только FPHL", callback_data="banleague:FPHL")
@@ -979,13 +997,13 @@ def ban_league_choice_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def back_to_menu_kb() -> InlineKeyboardMarkup:
+def back_to_menu_kb() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ В меню", callback_data="adm:menu")
     return kb.as_markup()
 
 
-def exceptions_menu_kb() -> InlineKeyboardMarkup:
+def exceptions_menu_kb() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить исключение", callback_data="adm:add_exception")
     kb.button(text="📋 Список исключений", callback_data="adm:list_exceptions")
@@ -994,7 +1012,7 @@ def exceptions_menu_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def exceptions_list_kb(exceptions) -> InlineKeyboardMarkup:
+def exceptions_list_kb(exceptions) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for ex in exceptions:
         label = f"❌ Удалить {ex['tg_id']}"
@@ -1004,7 +1022,7 @@ def exceptions_list_kb(exceptions) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def admin_player_card_kb(tg_id: int) -> InlineKeyboardMarkup:
+def admin_player_card_kb(tg_id: int) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Изменить Никнейм", callback_data=f"adm_pedit:nick:{tg_id}")
     kb.button(text="🎮 Изменить SteamID", callback_data=f"adm_pedit:steam:{tg_id}")
@@ -1014,7 +1032,7 @@ def admin_player_card_kb(tg_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def admin_teams_choice_kb(chats, tg_id: int) -> InlineKeyboardMarkup:
+def admin_teams_choice_kb(chats, tg_id: int) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🆓 Free Agent (Без команды)", callback_data=f"adm_pedit_setteam:{tg_id}:0")
     for c in chats:
@@ -1024,7 +1042,7 @@ def admin_teams_choice_kb(chats, tg_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def chats_choice_kb(chats, prefix: str) -> InlineKeyboardMarkup:
+def chats_choice_kb(chats, prefix: str) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for c in chats:
         kb.button(text=f"[{c['league']}] {c['name']}", callback_data=f"{prefix}:{c['chat_id']}")
@@ -1033,7 +1051,7 @@ def chats_choice_kb(chats, prefix: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def chats_multiselect_kb(chats, selected: set) -> InlineKeyboardMarkup:
+def chats_multiselect_kb(chats, selected: set) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for c in chats:
         mark = "✅" if c["chat_id"] in selected else "⬜️"
@@ -1043,7 +1061,7 @@ def chats_multiselect_kb(chats, selected: set) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def matches_list_kb(matches) -> InlineKeyboardMarkup:
+def matches_list_kb(matches) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for m in matches:
         local_time = m["match_time"].astimezone(MSK)
@@ -1054,7 +1072,7 @@ def matches_list_kb(matches) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def match_card_kb(match_id: int) -> InlineKeyboardMarkup:
+def match_card_kb(match_id: int) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🗑 Удалить матч", callback_data=f"adm:del_match:{match_id}")
     kb.button(text="⬅️ К списку матчей", callback_data="adm:list_matches")
@@ -1062,7 +1080,7 @@ def match_card_kb(match_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def servers_choice_kb(servers) -> InlineKeyboardMarkup:
+def servers_choice_kb(servers) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for s in servers:
         kb.button(text=f"🖥 {s['name']} ({s['ip']}:{s['port']})", callback_data=f"srv:{s['id']}")
@@ -1072,7 +1090,7 @@ def servers_choice_kb(servers) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def servers_list_kb(servers) -> InlineKeyboardMarkup:
+def servers_list_kb(servers) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for s in servers:
         kb.button(text=f"🗑 {s['name']} ({s['ip']}:{s['port']})", callback_data=f"adm:del_server:{s['id']}")
@@ -1081,7 +1099,7 @@ def servers_list_kb(servers) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def edit_chat_menu_kb() -> InlineKeyboardMarkup:
+def edit_chat_menu_kb() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Изменить название", callback_data="editchat:name")
     kb.button(text="🖼 Изменить эмодзи-лого", callback_data="editchat:emoji")
@@ -1090,7 +1108,7 @@ def edit_chat_menu_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def ban_duration_kb() -> InlineKeyboardMarkup:
+def ban_duration_kb() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for label, days in [("1 день", 1), ("3 дня", 3), ("7 дней", 7), ("30 дней", 30)]:
         kb.button(text=label, callback_data=f"bandur:{days}")
@@ -1099,7 +1117,7 @@ def ban_duration_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def bans_list_kb(bans) -> InlineKeyboardMarkup:
+def bans_list_kb(bans) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for b in bans:
         kb.button(text=f"✅ Разбанить #{b['id']} ({b['tg_id']})", callback_data=f"adm:unban:{b['id']}")
@@ -1108,7 +1126,7 @@ def bans_list_kb(bans) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def profile_menu_kb(player=None, active_recruitment=None) -> InlineKeyboardMarkup:
+def profile_menu_kb(player=None, active_recruitment=None) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if active_recruitment:
         season_text = active_recruitment['season']
@@ -1122,7 +1140,7 @@ def profile_menu_kb(player=None, active_recruitment=None) -> InlineKeyboardMarku
     return kb.as_markup()
 
 
-def captain_app_user_kb() -> InlineKeyboardMarkup:
+def captain_app_user_kb() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Редактировать заявку", callback_data="cap_apply:edit")
     kb.button(text="🗑 Удалить заявку", callback_data="cap_apply:delete_confirm")
@@ -1131,7 +1149,7 @@ def captain_app_user_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def teams_list_kb(chats) -> InlineKeyboardMarkup:
+def teams_list_kb(chats) -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for c in chats:
         logo = f"{c['logo_emoji']} " if c["logo_emoji"] else ""
@@ -1141,7 +1159,7 @@ def teams_list_kb(chats) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def team_roster_kb() -> InlineKeyboardMarkup:
+def team_roster_kb() -&gt; InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="⬅️ К списку команд", callback_data="profile:teams")
     kb.button(text="🏠 В профиль", callback_data="profile:menu")
@@ -1167,21 +1185,21 @@ team_chat_router.chat_member.filter(F.chat.type.in_({"group", "supergroup"}))
 AUTHED_ADMINS: set[int] = set()
 
 
-def is_authed(user_id: int) -> bool:
+def is_authed(user_id: int) -&gt; bool:
     return user_id in AUTHED_ADMINS
 
 
 @start_router.message(CommandStart(), F.chat.type != "private")
 async def cmd_start_chat(message: Message):
     text = (
-        "👋 <b>Привет!</b>\n\n"
+        "👋 &lt;b&gt;Привет!&lt;/b&gt;\n\n"
         "Данный бот предназначен для автоматизации раскаток, ведения составов и уведомлений RPL / FPHL.\n\n"
         f"🃏 Играйте в наш коллекционный бот карточек игроков Puck — {PUCK_BOT_USERNAME}"
     )
     await message.answer(text)
 
 
-def _has_allowed_hashtag(text: str) -> bool:
+def _has_allowed_hashtag(text: str) -&gt; bool:
     if not text:
         return False
     lowered = text.lower()
@@ -1210,7 +1228,7 @@ async def cmd_lineup(message: Message):
     kb.button(text="🏆 RPL", callback_data="lineup_league:RPL")
     kb.button(text="🏒 FPHL", callback_data="lineup_league:FPHL")
     kb.adjust(2)
-    await message.answer("🏒 <b>Выберите лигу для просмотра составов:</b>", reply_markup=kb.as_markup())
+    await message.answer("🏒 &lt;b&gt;Выберите лигу для просмотра составов:&lt;/b&gt;", reply_markup=kb.as_markup())
 
 
 @start_router.callback_query(F.data.startswith("lineup_league:"))
@@ -1226,7 +1244,7 @@ async def cb_lineup_league(call: CallbackQuery):
         kb.button(text=f"{logo}{c['name']}", callback_data=f"team_view:{c['chat_id']}")
     kb.button(text="⬅️ Выбор лиги", callback_data="lineup_back")
     kb.adjust(1)
-    await call.message.edit_text(f"🏒 <b>Команды лиги {league}:</b>", reply_markup=kb.as_markup())
+    await call.message.edit_text(f"🏒 &lt;b&gt;Команды лиги {league}:&lt;/b&gt;", reply_markup=kb.as_markup())
     await call.answer()
 
 
@@ -1236,17 +1254,17 @@ async def cb_lineup_back(call: CallbackQuery):
     kb.button(text="🏆 RPL", callback_data="lineup_league:RPL")
     kb.button(text="🏒 FPHL", callback_data="lineup_league:FPHL")
     kb.adjust(2)
-    await call.message.edit_text("🏒 <b>Выберите лигу для просмотра составов:</b>", reply_markup=kb.as_markup())
+    await call.message.edit_text("🏒 &lt;b&gt;Выберите лигу для просмотра составов:&lt;/b&gt;", reply_markup=kb.as_markup())
     await call.answer()
 
 
 @auth_router.message(Command("adminkarpl"))
 async def cmd_admin(message: Message, state: FSMContext):
     if is_authed(message.from_user.id):
-        await message.answer("🔐 <b>Админ-панель RPL / FPHL</b>", reply_markup=admin_main_menu())
+        await message.answer("🔐 &lt;b&gt;Админ-панель RPL / FPHL&lt;/b&gt;", reply_markup=admin_main_menu())
         return
     await state.set_state(AdminAuth.waiting_login)
-    await message.answer("🔐 Введите <b>логин</b>:")
+    await message.answer("🔐 Введите &lt;b&gt;логин&lt;/b&gt;:")
 
 
 @auth_router.message(AdminAuth.waiting_login)
@@ -1256,7 +1274,7 @@ async def process_login(message: Message, state: FSMContext):
         await state.clear()
         return
     await state.set_state(AdminAuth.waiting_password)
-    await message.answer("🔑 Введите <b>пароль</b>:")
+    await message.answer("🔑 Введите &lt;b&gt;пароль&lt;/b&gt;:")
 
 
 @auth_router.message(AdminAuth.waiting_password)
@@ -1267,7 +1285,7 @@ async def process_password(message: Message, state: FSMContext):
         return
     AUTHED_ADMINS.add(message.from_user.id)
     await state.clear()
-    await message.answer("✅ Доступ разрешён!\n\n🔐 <b>Админ-панель RPL / FPHL</b>", reply_markup=admin_main_menu())
+    await message.answer("✅ Доступ разрешён!\n\n🔐 &lt;b&gt;Админ-панель RPL / FPHL&lt;/b&gt;", reply_markup=admin_main_menu())
 
 
 @panel_router.callback_query.middleware()
@@ -1288,7 +1306,7 @@ async def check_authed_msg(handler, event: Message, data):
 @panel_router.callback_query(F.data == "adm:menu")
 async def cb_menu(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await call.message.edit_text("🔐 <b>Админ-панель RPL / FPHL</b>", reply_markup=admin_main_menu())
+    await call.message.edit_text("🔐 &lt;b&gt;Админ-панель RPL / FPHL&lt;/b&gt;", reply_markup=admin_main_menu())
     await call.answer()
 
 
@@ -1298,8 +1316,8 @@ async def cb_menu(call: CallbackQuery, state: FSMContext):
 async def cb_admin_open_captains(call: CallbackQuery, state: FSMContext):
     await state.set_state(OpenCaptainRecruitment.waiting_channel)
     await call.message.edit_text(
-        "📢 <b>Открытие набора капитанов</b>\n\n"
-        "1️⃣ Введите <b>юзернейм канала лиги</b> (например, <code>@rpl_channel</code>):",
+        "📢 &lt;b&gt;Открытие набора капитанов&lt;/b&gt;\n\n"
+        "1️⃣ Введите &lt;b&gt;юзернейм канала лиги&lt;/b&gt; (например, &lt;code&gt;@rpl_channel&lt;/code&gt;):",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -1311,7 +1329,7 @@ async def process_recruitment_channel(message: Message, state: FSMContext):
     await state.update_data(rec_channel=channel)
     await state.set_state(OpenCaptainRecruitment.waiting_season)
     await message.answer(
-        "2️⃣ Введите <b>сезон</b> (например, <code>6</code> или <code>6 сезон</code>):"
+        "2️⃣ Введите &lt;b&gt;сезон&lt;/b&gt; (например, &lt;code&gt;6&lt;/code&gt; или &lt;code&gt;6 сезон&lt;/code&gt;):"
     )
 
 
@@ -1324,9 +1342,9 @@ async def process_recruitment_season(message: Message, state: FSMContext, bot: B
 
     rec = await create_recruitment(channel, season)
     await message.answer(
-        f"✅ <b>Набор капитанов успешно открыт!</b>\n"
-        f"📢 Канал: <code>{esc(rec['channel_username'])}</code>\n"
-        f"🏆 Сезон: <b>{esc(rec['season'])}</b>\n\n"
+        f"✅ &lt;b&gt;Набор капитанов успешно открыт!&lt;/b&gt;\n"
+        f"📢 Канал: &lt;code&gt;{esc(rec['channel_username'])}&lt;/code&gt;\n"
+        f"🏆 Сезон: &lt;b&gt;{esc(rec['season'])}&lt;/b&gt;\n\n"
         "🚀 Запущена рассылка игрокам..."
     )
 
@@ -1335,7 +1353,7 @@ async def process_recruitment_season(message: Message, state: FSMContext, bot: B
 
 async def broadcast_captain_recruitment(bot: Bot, channel: str, season: str):
     text = (
-        f"🔥 <b>Открыт набор капитанов на {esc(season)} сезон!</b>\n\n"
+        f"🔥 &lt;b&gt;Открыт набор капитанов на {esc(season)} сезон!&lt;/b&gt;\n\n"
         f"📢 Официальный канал лиги: {esc(channel)}\n\n"
         "Если вы хотите создать и возглавить команду в новом сезоне — нажимайте кнопку ниже и подавайте заявку!"
     )
@@ -1373,14 +1391,14 @@ async def cb_admin_list_cap_apps(call: CallbackQuery):
         kb.button(text=label, callback_data=f"adm:cap_app_view:{app['id']}")
 
     total_pages = (total + limit - 1) // limit
-    if page > 0:
+    if page &gt; 0:
         kb.button(text="◀️ Назад", callback_data=f"adm:cap_apps:{page - 1}")
-    if (page + 1) < total_pages:
+    if (page + 1) &lt; total_pages:
         kb.button(text="Вперёд ▶️", callback_data=f"adm:cap_apps:{page + 1}")
     kb.button(text="⬅️ В меню", callback_data="adm:menu")
     kb.adjust(1)
 
-    text = f"📂 <b>Заявки на капитанов ({total}):</b> (Стр. {page + 1}/{total_pages})"
+    text = f"📂 &lt;b&gt;Заявки на капитанов ({total}):&lt;/b&gt; (Стр. {page + 1}/{total_pages})"
     await call.message.edit_text(text, reply_markup=kb.as_markup())
     await call.answer()
 
@@ -1397,16 +1415,16 @@ async def cb_admin_view_cap_app(call: CallbackQuery):
     created = app["created_at"].astimezone(MSK).strftime("%d.%m.%Y %H:%M МСК")
 
     text = (
-        f"📋 <b>Заявка на капитана #{app['id']}</b>\n"
+        f"📋 &lt;b&gt;Заявка на капитана #{app['id']}&lt;/b&gt;\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 <b>Игрок (TG):</b> {esc(app['full_name'])} ({user_tag})\n"
-        f"🆔 <b>TG ID:</b> <code>{app['tg_id']}</code>\n"
-        f"🏆 <b>Сезон:</b> {esc(app['season'])}\n\n"
-        f"🏷 <b>Ваш Nickname:</b> {esc(app['nickname'])}\n"
-        f"⏰ <b>Ваши часы:</b> {esc(app['hours'])}\n"
-        f"📜 <b>Ваш Опыт:</b> {esc(app['experience'])}\n"
-        f"🛡 <b>Ваша команда:</b> {esc(app['team_name'])}\n\n"
-        f"🕒 <b>Дата подачи:</b> {created}"
+        f"👤 &lt;b&gt;Игрок (TG):&lt;/b&gt; {esc(app['full_name'])} ({user_tag})\n"
+        f"🆔 &lt;b&gt;TG ID:&lt;/b&gt; &lt;code&gt;{app['tg_id']}&lt;/code&gt;\n"
+        f"🏆 &lt;b&gt;Сезон:&lt;/b&gt; {esc(app['season'])}\n\n"
+        f"🏷 &lt;b&gt;Ваш Nickname:&lt;/b&gt; {esc(app['nickname'])}\n"
+        f"⏰ &lt;b&gt;Ваши часы:&lt;/b&gt; {esc(app['hours'])}\n"
+        f"📜 &lt;b&gt;Ваш Опыт:&lt;/b&gt; {esc(app['experience'])}\n"
+        f"🛡 &lt;b&gt;Ваша команда:&lt;/b&gt; {esc(app['team_name'])}\n\n"
+        f"🕒 &lt;b&gt;Дата подачи:&lt;/b&gt; {created}"
     )
 
     kb = InlineKeyboardBuilder()
@@ -1433,7 +1451,7 @@ async def cb_rebuild_whitelist(call: CallbackQuery):
     await call.answer("⏳ Обновляю whitelist в фоне...")
     asyncio.create_task(rebuild_whitelist_file())
     await call.message.edit_text(
-        "✅ <b>Обновление whitelist запущено в фоне.</b>\n"
+        "✅ &lt;b&gt;Обновление whitelist запущено в фоне.&lt;/b&gt;\n"
         "Проверь логи Railway через 5–10 секунд, чтобы увидеть результат.",
         reply_markup=back_to_menu_kb(),
     )
@@ -1455,17 +1473,17 @@ async def cb_admin_all_players(call: CallbackQuery):
     for p in players:
         nick = esc(p["nickname"]) if p["nickname"] else esc(p["first_name"] or "Игрок")
         team = f"[{p['team_league']}] {esc(p['team_name'])}" if p["team_name"] else "Free Agent"
-        steam = f"<code>{esc(p['steam_id'])}</code>" if p["steam_id"] else "❌"
+        steam = f"&lt;code&gt;{esc(p['steam_id'])}&lt;/code&gt;" if p["steam_id"] else "❌"
         user = f"@{esc(p['username'])}" if p["username"] else f"ID:{p['tg_id']}"
-        lines.append(f"👤 <b>{nick}</b> ({user})\n   ↳ Команда: {team} | SteamID: {steam}")
+        lines.append(f"👤 &lt;b&gt;{nick}&lt;/b&gt; ({user})\n   ↳ Команда: {team} | SteamID: {steam}")
 
     total_pages = (total + limit - 1) // limit
-    text = f"👥 <b>Все зарегистрированные игроки ({total}):</b> (Стр. {page + 1}/{total_pages})\n━━━━━━━━━━━━━━━━━━━\n\n" + "\n\n".join(lines)
+    text = f"👥 &lt;b&gt;Все зарегистрированные игроки ({total}):&lt;/b&gt; (Стр. {page + 1}/{total_pages})\n━━━━━━━━━━━━━━━━━━━\n\n" + "\n\n".join(lines)
 
     kb = InlineKeyboardBuilder()
-    if page > 0:
+    if page &gt; 0:
         kb.button(text="◀️ Назад", callback_data=f"adm:all_players:{page - 1}")
-    if (page + 1) < total_pages:
+    if (page + 1) &lt; total_pages:
         kb.button(text="Вперёд ▶️", callback_data=f"adm:all_players:{page + 1}")
     kb.button(text="⬅️ В меню", callback_data="adm:menu")
     kb.adjust(2, 1)
@@ -1482,7 +1500,7 @@ async def cb_admin_reset_steam_confirm(call: CallbackQuery):
     kb.adjust(1)
 
     await call.message.edit_text(
-        "⚠️ <b>ВНИМАНИЕ! Вы действительно хотите сбросить SteamID ВСЕМ игрокам?</b>\n\n"
+        "⚠️ &lt;b&gt;ВНИМАНИЕ! Вы действительно хотите сбросить SteamID ВСЕМ игрокам?&lt;/b&gt;\n\n"
         "После этого бот автоматически уведомит абсолютно всех игроков в личные сообщения, "
         "а также отправит объявления во все командные чаты!",
         reply_markup=kb.as_markup(),
@@ -1507,9 +1525,9 @@ async def cb_admin_reset_steam_execute(call: CallbackQuery, bot: Bot):
 
 async def broadcast_steam_reset(bot: Bot):
     reset_text = (
-        "📢 <b>ВНИМАНИЕ ВСЕМ ИГРОКАМ!</b>\n\n"
-        "Администрация лиги выполнила <b>сброс SteamID</b> для всех игроков.\n"
-        "Пожалуйста, зайдите в личные сообщения бота и привяжите ваш <b>SteamID</b> заново!"
+        "📢 &lt;b&gt;ВНИМАНИЕ ВСЕМ ИГРОКАМ!&lt;/b&gt;\n\n"
+        "Администрация лиги выполнила &lt;b&gt;сброс SteamID&lt;/b&gt; для всех игроков.\n"
+        "Пожалуйста, зайдите в личные сообщения бота и привяжите ваш &lt;b&gt;SteamID&lt;/b&gt; заново!"
     )
 
     chats = await get_chats()
@@ -1544,8 +1562,8 @@ async def cb_captains_menu(call: CallbackQuery):
     caps = await get_all_captain_chats()
     lines = []
     for c in caps:
-        lines.append(f"👑 <b>Капитанская {c['league']}:</b> <code>{c['chat_id']}</code>")
-    text = "👑 <b>Настройка капитанских чатов</b>\n\n" + ("\n".join(lines) if lines else "<i>Чаты еще не настроены</i>")
+        lines.append(f"👑 &lt;b&gt;Капитанская {c['league']}:&lt;/b&gt; &lt;code&gt;{c['chat_id']}&lt;/code&gt;")
+    text = "👑 &lt;b&gt;Настройка капитанских чатов&lt;/b&gt;\n\n" + ("\n".join(lines) if lines else "&lt;i&gt;Чаты еще не настроены&lt;/i&gt;")
 
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Задать капитанскую RPL", callback_data="adm:set_cap:RPL")
@@ -1563,7 +1581,7 @@ async def cb_set_captain_prompt(call: CallbackQuery, state: FSMContext):
     await state.update_data(cap_league=league)
     await state.set_state(AddCaptainsChat.waiting_id)
     await call.message.edit_text(
-        f"👑 <b>Привязка капитанского чата {league}</b>\n\nПришлите ID чата Капитанской (например: -1001234567890):",
+        f"👑 &lt;b&gt;Привязка капитанского чата {league}&lt;/b&gt;\n\nПришлите ID чата Капитанской (например: -1001234567890):",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -1581,12 +1599,12 @@ async def process_captain_chat_id(message: Message, state: FSMContext):
     league = data.get("cap_league", "RPL")
     await set_captain_chat(league, chat_id)
     await state.clear()
-    await message.answer(f"✅ Капитанский чат для лиги <b>{league}</b> установлен (<code>{chat_id}</code>)!", reply_markup=admin_main_menu())
+    await message.answer(f"✅ Капитанский чат для лиги &lt;b&gt;{league}&lt;/b&gt; установлен (&lt;code&gt;{chat_id}&lt;/code&gt;)!", reply_markup=admin_main_menu())
 
 
 @panel_router.callback_query(F.data == "adm:exceptions_menu")
 async def cb_exceptions_menu(call: CallbackQuery):
-    await call.message.edit_text("🛡 <b>Управление исключениями (мультичат)</b>", reply_markup=exceptions_menu_kb())
+    await call.message.edit_text("🛡 &lt;b&gt;Управление исключениями (мультичат)&lt;/b&gt;", reply_markup=exceptions_menu_kb())
     await call.answer()
 
 
@@ -1594,7 +1612,7 @@ async def cb_exceptions_menu(call: CallbackQuery):
 async def cb_add_exception_prompt(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminExceptions.waiting_target)
     await call.message.edit_text(
-        "➕ <b>Добавление исключения</b>\n\n"
+        "➕ &lt;b&gt;Добавление исключения&lt;/b&gt;\n\n"
         "Пришлите TG ID или @username игрока, которому разрешено находиться сразу в нескольких чатах команд:",
         reply_markup=back_to_menu_kb(),
     )
@@ -1622,7 +1640,7 @@ async def process_add_exception(message: Message, state: FSMContext):
     await add_exception_db(target_id)
     await state.clear()
     await message.answer(
-        f"✅ Игрок <code>{target_id}</code> успешно добавлен в исключения! Теперь ему можно состоять в нескольких чатах.",
+        f"✅ Игрок &lt;code&gt;{target_id}&lt;/code&gt; успешно добавлен в исключения! Теперь ему можно состоять в нескольких чатах.",
         reply_markup=admin_main_menu(),
     )
 
@@ -1639,10 +1657,10 @@ async def cb_list_exceptions(call: CallbackQuery):
     for ex in ex_list:
         username = f"@{esc(ex['username'])}" if ex["username"] else "—"
         nickname = esc(ex["nickname"]) if ex["nickname"] else esc(ex["first_name"] or "Игрок")
-        lines.append(f"🛡 <b>{nickname}</b> (<code>{ex['tg_id']}</code> | {username})")
+        lines.append(f"🛡 &lt;b&gt;{nickname}&lt;/b&gt; (&lt;code&gt;{ex['tg_id']}&lt;/code&gt; | {username})")
 
     await call.message.edit_text(
-        "📋 <b>Игроки в исключениях (мультичат):</b>\n\n" + "\n".join(lines),
+        "📋 &lt;b&gt;Игроки в исключениях (мультичат):&lt;/b&gt;\n\n" + "\n".join(lines),
         reply_markup=exceptions_list_kb(ex_list),
     )
     await call.answer()
@@ -1657,7 +1675,7 @@ async def cb_delete_exception(call: CallbackQuery):
     if not ex_list:
         await call.message.edit_text("📋 Список исключений пуст.", reply_markup=exceptions_menu_kb())
         return
-    await call.message.edit_text("📋 <b>Игроки в исключениях:</b>", reply_markup=exceptions_list_kb(ex_list))
+    await call.message.edit_text("📋 &lt;b&gt;Игроки в исключениях:&lt;/b&gt;", reply_markup=exceptions_list_kb(ex_list))
 
 
 async def show_admin_player_card(message_or_call, tg_id: int):
@@ -1667,7 +1685,7 @@ async def show_admin_player_card(message_or_call, tg_id: int):
         player = await get_player(tg_id)
 
     profile_text = await build_profile_text(player)
-    text = f"👤 <b>Редактирование профиля игрока</b>\n\n{profile_text}"
+    text = f"👤 &lt;b&gt;Редактирование профиля игрока&lt;/b&gt;\n\n{profile_text}"
 
     if isinstance(message_or_call, Message):
         await message_or_call.answer(text, reply_markup=admin_player_card_kb(tg_id))
@@ -1679,7 +1697,7 @@ async def show_admin_player_card(message_or_call, tg_id: int):
 async def cb_edit_profile_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminEditProfile.waiting_target)
     await call.message.edit_text(
-        "👤 <b>Редактор профиля</b>\n\nПришлите TG ID или @username игрока, чей профиль вы хотите изменить:",
+        "👤 &lt;b&gt;Редактор профиля&lt;/b&gt;\n\nПришлите TG ID или @username игрока, чей профиль вы хотите изменить:",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -1713,8 +1731,8 @@ async def cb_edit_p_nick_prompt(call: CallbackQuery, state: FSMContext):
     await state.update_data(pedit_target=tg_id)
     await state.set_state(AdminEditProfile.waiting_nickname)
     await call.message.edit_text(
-        f"✏️ <b>Изменение Никнейма (TG ID: <code>{tg_id}</code>)</b>\n\n"
-        "Пришлите новый никнейм и номер (формат: <code>Nick #Number</code>):",
+        f"✏️ &lt;b&gt;Изменение Никнейма (TG ID: &lt;code&gt;{tg_id}&lt;/code&gt;)&lt;/b&gt;\n\n"
+        "Пришлите новый никнейм и номер (формат: &lt;code&gt;Nick #Number&lt;/code&gt;):",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -1743,7 +1761,7 @@ async def cb_edit_p_steam_prompt(call: CallbackQuery, state: FSMContext):
     await state.update_data(pedit_target=tg_id)
     await state.set_state(AdminEditProfile.waiting_steamid)
     await call.message.edit_text(
-        f"🎮 <b>Изменение SteamID (TG ID: <code>{tg_id}</code>)</b>\n\n"
+        f"🎮 &lt;b&gt;Изменение SteamID (TG ID: &lt;code&gt;{tg_id}&lt;/code&gt;)&lt;/b&gt;\n\n"
         "Пришлите новый SteamID для этого игрока:",
         reply_markup=back_to_menu_kb(),
     )
@@ -1776,7 +1794,7 @@ async def cb_edit_p_team_prompt(call: CallbackQuery):
     tg_id = int(call.data.split(":")[2])
     chats = await get_chats()
     await call.message.edit_text(
-        f"🏒 <b>Изменение команды игрока (TG ID: <code>{tg_id}</code>)</b>\n\n"
+        f"🏒 &lt;b&gt;Изменение команды игрока (TG ID: &lt;code&gt;{tg_id}&lt;/code&gt;)&lt;/b&gt;\n\n"
         "Выберите новую команду для игрока:",
         reply_markup=admin_teams_choice_kb(chats, tg_id),
     )
@@ -1806,7 +1824,7 @@ async def cb_edit_p_set_team(call: CallbackQuery):
 async def cb_add_chat(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddChat.waiting_league)
     await call.message.edit_text(
-        "➕ <b>Создание команды</b>\n\n1️⃣ Выберите лигу:",
+        "➕ &lt;b&gt;Создание команды&lt;/b&gt;\n\n1️⃣ Выберите лигу:",
         reply_markup=league_choice_kb("pick_league"),
     )
     await call.answer()
@@ -1818,7 +1836,7 @@ async def cb_pick_league(call: CallbackQuery, state: FSMContext):
     await state.update_data(league=league)
     await state.set_state(AddChat.waiting_id)
     await call.message.edit_text(
-        f"Выбрана лига: <b>{league}</b>\n\n2️⃣ Пришлите <b>ID чата</b> (например, -1001234567890):",
+        f"Выбрана лига: &lt;b&gt;{league}&lt;/b&gt;\n\n2️⃣ Пришлите &lt;b&gt;ID чата&lt;/b&gt; (например, -1001234567890):",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -1833,7 +1851,7 @@ async def process_chat_id(message: Message, state: FSMContext):
         return
     await state.update_data(chat_id=chat_id)
     await state.set_state(AddChat.waiting_name)
-    await message.answer("✏️ Пришлите <b>название</b> команды (например, «Динамо Москва»):")
+    await message.answer("✏️ Пришлите &lt;b&gt;название&lt;/b&gt; команды (например, «Динамо Москва»):")
 
 
 @panel_router.message(AddChat.waiting_name)
@@ -1844,7 +1862,67 @@ async def process_chat_name(message: Message, state: FSMContext):
     name = message.text.strip()
     await add_chat(chat_id, name, league)
     await state.clear()
-    await message.answer(f"✅ Команда <b>{esc(name)}</b> [{league}] (<code>{chat_id}</code>) успешно добавлена!", reply_markup=admin_main_menu())
+    await message.answer(f"✅ Команда &lt;b&gt;{esc(name)}&lt;/b&gt; [{league}] (&lt;code&gt;{chat_id}&lt;/code&gt;) успешно добавлена!", reply_markup=admin_main_menu())
+
+
+@panel_router.callback_query(F.data == "adm:del_chat_menu")
+async def cb_del_chat_menu(call: CallbackQuery):
+    chats = await get_chats()
+    if not chats:
+        await call.message.edit_text("📋 Команд для удаления нет.", reply_markup=back_to_menu_kb())
+        await call.answer()
+        return
+
+    kb = InlineKeyboardBuilder()
+    for c in chats:
+        kb.button(text=f"🗑 [{c['league']}] {c['name']}", callback_data=f"adm:del_chat_confirm:{c['chat_id']}")
+    kb.button(text="⬅️ В меню", callback_data="adm:menu")
+    kb.adjust(1)
+
+    await call.message.edit_text(
+        "🗑 &lt;b&gt;Удаление команды&lt;/b&gt;\n\n"
+        "Выберите команду, которую хотите полностью удалить из бота.\n"
+        "⚠️ Внимание: это действие сбросит команду у всех её игроков и удалит связанные матчи!",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@panel_router.callback_query(F.data.startswith("adm:del_chat_confirm:"))
+async def cb_del_chat_confirm(call: CallbackQuery):
+    chat_id = int(call.data.split(":")[2])
+    chat = await get_chat(chat_id)
+    if not chat:
+        await call.answer("Команда не найдена", show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔥 Да, удалить команду", callback_data=f"adm:del_chat_execute:{chat_id}")
+    kb.button(text="❌ Отмена", callback_data="adm:del_chat_menu")
+    kb.adjust(1)
+
+    await call.message.edit_text(
+        f"⚠️ &lt;b&gt;Подтвердите удаление команды:&lt;/b&gt;\n\n"
+        f"Название: &lt;b&gt;{esc(chat['name'])}&lt;/b&gt;\n"
+        f"ID чата: &lt;code&gt;{chat['chat_id']}&lt;/code&gt;\n"
+        f"Лига: &lt;b&gt;{chat['league']}&lt;/b&gt;\n\n"
+        "Вы уверены, что хотите удалить эту команду?",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@panel_router.callback_query(F.data.startswith("adm:del_chat_execute:"))
+async def cb_del_chat_execute(call: CallbackQuery):
+    chat_id = int(call.data.split(":")[3])
+    chat = await get_chat(chat_id)
+    if not chat:
+        await call.answer("Команда не найдена", show_alert=True)
+        return
+
+    await delete_chat_db(chat_id)
+    await call.answer(f"🗑 Команда {chat['name']} удалена", show_alert=True)
+    await cb_del_chat_menu(call)
 
 
 @panel_router.callback_query(F.data == "adm:list_chats")
@@ -1854,8 +1932,8 @@ async def cb_list_chats(call: CallbackQuery):
         await call.message.edit_text("📋 Пока нет ни одной добавленной команды.", reply_markup=back_to_menu_kb())
         await call.answer()
         return
-    lines = [f"🏒 [{c['league']}] <b>{esc(c['name'])}</b> — <code>{c['chat_id']}</code>" for c in chats]
-    await call.message.edit_text("📋 <b>Список команд:</b>\n\n" + "\n".join(lines), reply_markup=back_to_menu_kb())
+    lines = [f"🏒 [{c['league']}] &lt;b&gt;{esc(c['name'])}&lt;/b&gt; — &lt;code&gt;{c['chat_id']}&lt;/code&gt;" for c in chats]
+    await call.message.edit_text("📋 &lt;b&gt;Список команд:&lt;/b&gt;\n\n" + "\n".join(lines), reply_markup=back_to_menu_kb())
     await call.answer()
 
 
@@ -1900,7 +1978,7 @@ async def process_edit_chat_name(message: Message, state: FSMContext):
     new_name = message.text.strip()
     await update_chat_name(chat_id, new_name)
     await state.clear()
-    await message.answer(f"✅ Название команды обновлено на «<b>{esc(new_name)}</b>»", reply_markup=admin_main_menu())
+    await message.answer(f"✅ Название команды обновлено на «&lt;b&gt;{esc(new_name)}&lt;/b&gt;»", reply_markup=admin_main_menu())
 
 
 @panel_router.callback_query(F.data == "editchat:emoji")
@@ -1940,7 +2018,7 @@ async def process_edit_chat_emoji(message: Message, state: FSMContext, bot: Bot)
     team_name = chat_info["name"] if chat_info else ""
     try:
         entities = [MessageEntity(type="custom_emoji", offset=0, length=len(emoji_char), custom_emoji_id=entity.custom_emoji_id)]
-        await bot.send_message(chat_id, f"{emoji_char} Логотип команды «<b>{esc(team_name)}</b>» обновлён!", entities=entities)
+        await bot.send_message(chat_id, f"{emoji_char} Логотип команды «&lt;b&gt;{esc(team_name)}&lt;/b&gt;» обновлён!", entities=entities)
     except Exception as e:
         logging.warning(f"Не удалось отправить логотип в чат {chat_id}: {e}")
 
@@ -1949,7 +2027,7 @@ async def process_edit_chat_emoji(message: Message, state: FSMContext, bot: Bot)
 async def cb_add_server(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddServer.waiting_name)
     await call.message.edit_text(
-        "🖥 <b>Новый сервер</b>\n\n1️⃣ Пришлите <b>название</b> сервера (например, «Сервер #1»):",
+        "🖥 &lt;b&gt;Новый сервер&lt;/b&gt;\n\n1️⃣ Пришлите &lt;b&gt;название&lt;/b&gt; сервера (например, «Сервер #1»):",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -1959,7 +2037,7 @@ async def cb_add_server(call: CallbackQuery, state: FSMContext):
 async def cb_add_server_inline(call: CallbackQuery, state: FSMContext):
     await state.update_data(resume_match=True)
     await state.set_state(AddServer.waiting_name)
-    await call.message.edit_text("🖥 <b>Новый сервер</b>\n\n1️⃣ Пришлите <b>название</b> сервера:")
+    await call.message.edit_text("🖥 &lt;b&gt;Новый сервер&lt;/b&gt;\n\n1️⃣ Пришлите &lt;b&gt;название&lt;/b&gt; сервера:")
     await call.answer()
 
 
@@ -1967,21 +2045,21 @@ async def cb_add_server_inline(call: CallbackQuery, state: FSMContext):
 async def process_server_name(message: Message, state: FSMContext):
     await state.update_data(srv_name=message.text.strip())
     await state.set_state(AddServer.waiting_ip)
-    await message.answer("2️⃣ Пришлите <b>IP</b> сервера:")
+    await message.answer("2️⃣ Пришлите &lt;b&gt;IP&lt;/b&gt; сервера:")
 
 
 @panel_router.message(AddServer.waiting_ip)
 async def process_server_ip(message: Message, state: FSMContext):
     await state.update_data(srv_ip=message.text.strip())
     await state.set_state(AddServer.waiting_port)
-    await message.answer("3️⃣ Пришлите <b>Port</b> сервера:")
+    await message.answer("3️⃣ Пришлите &lt;b&gt;Port&lt;/b&gt; сервера:")
 
 
 @panel_router.message(AddServer.waiting_port)
 async def process_server_port(message: Message, state: FSMContext):
     await state.update_data(srv_port=message.text.strip())
     await state.set_state(AddServer.waiting_password)
-    await message.answer("4️⃣ Пришлите <b>Password</b> сервера:")
+    await message.answer("4️⃣ Пришлите &lt;b&gt;Password&lt;/b&gt; сервера:")
 
 
 @panel_router.message(AddServer.waiting_password)
@@ -2019,8 +2097,8 @@ async def process_server_password(message: Message, state: FSMContext):
         await state.clear()
         local_time = match["match_time"].astimezone(MSK)
         text = (
-            "✅ <b>Сервер сохранён и матч создан!</b>\n\n"
-            f"🆚 <b>{esc(match['team_home_name'])}</b> — <b>{esc(match['team_away_name'])}</b>\n"
+            "✅ &lt;b&gt;Сервер сохранён и матч создан!&lt;/b&gt;\n\n"
+            f"🆚 &lt;b&gt;{esc(match['team_home_name'])}&lt;/b&gt; — &lt;b&gt;{esc(match['team_away_name'])}&lt;/b&gt;\n"
             f"🕒 {local_time.strftime('%d.%m.%Y %H:%M')} МСК\n"
             f"🖥 {esc(match['server_name'])}\n\n"
             "Уведомления за 45 и 15 минут будут отправлены автоматически! 🔔"
@@ -2029,7 +2107,7 @@ async def process_server_password(message: Message, state: FSMContext):
         return
 
     await state.clear()
-    await message.answer(f"✅ Сервер <b>{esc(server['name'])}</b> сохранён!", reply_markup=admin_main_menu())
+    await message.answer(f"✅ Сервер &lt;b&gt;{esc(server['name'])}&lt;/b&gt; сохранён!", reply_markup=admin_main_menu())
 
 
 @panel_router.callback_query(F.data == "adm:list_servers")
@@ -2040,7 +2118,7 @@ async def cb_list_servers(call: CallbackQuery):
         await call.answer()
         return
     await call.message.edit_text(
-        "🗄 <b>Серверы</b> (нажмите, чтобы удалить):",
+        "🗄 &lt;b&gt;Серверы&lt;/b&gt; (нажмите, чтобы удалить):",
         reply_markup=servers_list_kb(servers),
     )
     await call.answer()
@@ -2055,13 +2133,13 @@ async def cb_delete_server(call: CallbackQuery):
     if not servers:
         await call.message.edit_text("🗄 Пока нет сохранённых серверов.", reply_markup=back_to_menu_kb())
         return
-    await call.message.edit_text("🗄 <b>Серверы:</b>", reply_markup=servers_list_kb(servers))
+    await call.message.edit_text("🗄 &lt;b&gt;Серверы:&lt;/b&gt;", reply_markup=servers_list_kb(servers))
 
 
 @panel_router.callback_query(F.data == "adm:add_match")
 async def cb_add_match(call: CallbackQuery, state: FSMContext):
     chats = await get_chats()
-    if len(chats) < 2:
+    if len(chats) &lt; 2:
         await call.message.edit_text(
             "❌ Нужно как минимум 2 добавленных чата для создания матча.",
             reply_markup=back_to_menu_kb(),
@@ -2070,7 +2148,7 @@ async def cb_add_match(call: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AddMatch.waiting_team1)
     await call.message.edit_text(
-        "🆚 <b>Новый матч</b>\n\n1️⃣ Выберите <b>хозяев (ред)</b>:",
+        "🆚 &lt;b&gt;Новый матч&lt;/b&gt;\n\n1️⃣ Выберите &lt;b&gt;хозяев (ред)&lt;/b&gt;:",
         reply_markup=chats_choice_kb(chats, "team1"),
     )
     await call.answer()
@@ -2085,7 +2163,7 @@ async def cb_pick_team1(call: CallbackQuery, state: FSMContext):
     remaining = [c for c in all_chats if c["chat_id"] != chat_id]
     await state.set_state(AddMatch.waiting_team2)
     await call.message.edit_text(
-        f"1️⃣ Хозяева: <b>{esc(chat['name'])}</b> ✅\n\n2️⃣ Выберите <b>гостей (блу)</b>:",
+        f"1️⃣ Хозяева: &lt;b&gt;{esc(chat['name'])}&lt;/b&gt; ✅\n\n2️⃣ Выберите &lt;b&gt;гостей (блу)&lt;/b&gt;:",
         reply_markup=chats_choice_kb(remaining, "team2"),
     )
     await call.answer()
@@ -2099,11 +2177,11 @@ async def cb_pick_team2(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddMatch.waiting_datetime)
     data = await state.get_data()
     await call.message.edit_text(
-        f"1️⃣ Хозяева: <b>{esc(data['team1_name'])}</b> ✅\n"
-        f"2️⃣ Гости: <b>{esc(chat['name'])}</b> ✅\n\n"
-        "3️⃣ Пришлите <b>дату и время матча по МСК</b> в формате:\n"
-        "<code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
-        "Например: <code>25.08.2026 20:30</code>",
+        f"1️⃣ Хозяева: &lt;b&gt;{esc(data['team1_name'])}&lt;/b&gt; ✅\n"
+        f"2️⃣ Гости: &lt;b&gt;{esc(chat['name'])}&lt;/b&gt; ✅\n\n"
+        "3️⃣ Пришлите &lt;b&gt;дату и время матча по МСК&lt;/b&gt; в формате:\n"
+        "&lt;code&gt;ДД.ММ.ГГГГ ЧЧ:ММ&lt;/code&gt;\n\n"
+        "Например: &lt;code&gt;25.08.2026 20:30&lt;/code&gt;",
     )
     await call.answer()
 
@@ -2114,7 +2192,7 @@ async def process_match_datetime(message: Message, state: FSMContext):
         naive_dt = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M")
     except ValueError:
         await message.answer(
-            "❌ Неверный формат. Пришлите так: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\nПример: <code>25.08.2026 20:30</code>"
+            "❌ Неверный формат. Пришлите так: &lt;code&gt;ДД.ММ.ГГГГ ЧЧ:ММ&lt;/code&gt;\nПример: &lt;code&gt;25.08.2026 20:30&lt;/code&gt;"
         )
         return
     match_time_msk = naive_dt.replace(tzinfo=MSK)
@@ -2124,11 +2202,11 @@ async def process_match_datetime(message: Message, state: FSMContext):
         await state.update_data(resume_match=True)
         await state.set_state(AddServer.waiting_name)
         await message.answer(
-            "🖥 Сохранённых серверов пока нет — добавьте сервер:\n\n1️⃣ Пришлите <b>название</b> сервера:"
+            "🖥 Сохранённых серверов пока нет — добавьте сервер:\n\n1️⃣ Пришлите &lt;b&gt;название&lt;/b&gt; сервера:"
         )
         return
     await state.set_state(AddMatch.waiting_server)
-    await message.answer("4️⃣ Выберите <b>сервер</b> для матча:", reply_markup=servers_choice_kb(servers))
+    await message.answer("4️⃣ Выберите &lt;b&gt;сервер&lt;/b&gt; для матча:", reply_markup=servers_choice_kb(servers))
 
 
 @panel_router.callback_query(AddMatch.waiting_server, F.data.startswith("srv:"))
@@ -2163,13 +2241,199 @@ async def cb_pick_server(call: CallbackQuery, state: FSMContext):
     await state.clear()
     local_time = match["match_time"].astimezone(MSK)
     text = (
-        "✅ <b>Матч успешно создан!</b>\n\n"
-        f"🆚 <b>{esc(match['team_home_name'])}</b> — <b>{esc(match['team_away_name'])}</b>\n"
+        "✅ &lt;b&gt;Матч успешно создан!&lt;/b&gt;\n\n"
+        f"🆚 &lt;b&gt;{esc(match['team_home_name'])}&lt;/b&gt; — &lt;b&gt;{esc(match['team_away_name'])}&lt;/b&gt;\n"
         f"🕒 {local_time.strftime('%d.%m.%Y %H:%M')} МСК\n"
         f"🖥 {esc(match['server_name'])}\n\n"
         "Напоминание и раскатка отправятся автоматически 🔔"
     )
     await call.message.edit_text(text, reply_markup=admin_main_menu())
+
+
+# ---------- ДОБАВЛЕНИЕ МАТЧЕЙ ИЗ ФАЙЛА ----------
+
+def parse_match_line(line: str):
+    line = line.strip()
+    if not line or "-" not in line or "|" not in line:
+        return None
+    try:
+        teams_part, time_part = line.split("|", 1)
+        teams = [t.strip() for t in teams_part.split("-", 1)]
+        if len(teams) != 2:
+            return None
+        team_home, team_away = teams[0], teams[1]
+        time_str = time_part.strip()
+
+        dt = None
+        for fmt in ("%H:%M %d.%m.%Y", "%d.%m.%Y %H:%M", "%H:%M %d.%m.%y", "%d.%m.%y %H:%M"):
+            try:
+                dt = datetime.strptime(time_str, fmt)
+                break
+            except ValueError:
+                continue
+        if not dt:
+            return None
+        return team_home, team_away, dt
+    except Exception:
+        return None
+
+
+def find_best_chat(team_name: str, chats) -&gt; dict | None:
+    name_clean = team_name.strip().lower()
+    # 1. Exact match
+    for c in chats:
+        if c["name"].strip().lower() == name_clean:
+            return c
+    # 2. Substring match
+    for c in chats:
+        c_name = c["name"].strip().lower()
+        if c_name in name_clean or name_clean in c_name:
+            return c
+    return None
+
+
+@panel_router.callback_query(F.data == "adm:add_matches_file")
+async def cb_add_matches_file_start(call: CallbackQuery, state: FSMContext):
+    servers = await get_servers()
+    if not servers:
+        await call.message.edit_text(
+            "❌ Сначала добавьте хотя бы один сервер в разделе «Добавить сервер».",
+            reply_markup=back_to_menu_kb()
+        )
+        await call.answer()
+        return
+
+    await state.set_state(AddMatchesFile.waiting_server)
+    kb = InlineKeyboardBuilder()
+    for s in servers:
+        kb.button(text=f"🖥 {s['name']}", callback_data=f"file_srv:{s['id']}")
+    kb.button(text="⬅️ В меню", callback_data="adm:menu")
+    kb.adjust(1)
+
+    await call.message.edit_text(
+        "🆚 &lt;b&gt;Пакетное добавление матчей из файла&lt;/b&gt;\n\n"
+        "Шаг 1: Выберите сервер, который будет назначен для этих матчей:",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@panel_router.callback_query(AddMatchesFile.waiting_server, F.data.startswith("file_srv:"))
+async def cb_file_pick_server(call: CallbackQuery, state: FSMContext):
+    server_id = int(call.data.split(":")[1])
+    server = await get_server(server_id)
+    if not server:
+        await call.answer("Сервер не найден", show_alert=True)
+        return
+
+    await state.update_data(
+        srv_id=server["id"],
+        srv_name=server["name"],
+        srv_ip=server["ip"],
+        srv_port=server["port"],
+        srv_password=server["password"]
+    )
+    await state.set_state(AddMatchesFile.waiting_file)
+    await call.message.edit_text(
+        f"Выбран сервер: &lt;b&gt;{esc(server['name'])}&lt;/b&gt;\n\n"
+        "Шаг 2: Отправьте мне файл &lt;b&gt;.txt&lt;/b&gt; со списком матчей.\n\n"
+        "Каждая строка должна быть в формате:\n"
+        "&lt;code&gt;Команда1 - Команда2 | Время&lt;/code&gt;\n\n"
+        "Например:\n"
+        "&lt;code&gt;Северсталь - Локомотив | 17:00 01.11.2026&lt;/code&gt;",
+        reply_markup=back_to_menu_kb()
+    )
+    await call.answer()
+
+
+@panel_router.message(AddMatchesFile.waiting_file, F.document)
+async def process_matches_file(message: Message, state: FSMContext, bot: Bot):
+    document = message.document
+    if not document.file_name.lower().endswith(".txt"):
+        await message.answer("❌ Ошибка: файл должен быть текстовым (.txt). Попробуйте еще раз:")
+        return
+
+    data = await state.get_data()
+    srv_name = data["srv_name"]
+    srv_ip = data["srv_ip"]
+    srv_port = data["srv_port"]
+    srv_password = data["srv_password"]
+
+    file_info = await bot.get_file(document.file_id)
+    file_buffer = io.BytesIO()
+    await bot.download(file_info, destination=file_buffer)
+    file_buffer.seek(0)
+    
+    try:
+        content = file_buffer.read().decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            file_buffer.seek(0)
+            content = file_buffer.read().decode("windows-1251")
+        except Exception:
+            await message.answer("❌ Ошибка кодировки файла. Пожалуйста, используйте кодировку UTF-8.")
+            return
+
+    chats = await get_chats()
+    lines = content.splitlines()
+
+    success_count = 0
+    errors = []
+
+    for index, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line:
+            continue
+
+        parsed = parse_match_line(line)
+        if not parsed:
+            errors.append(f"Строка {index}: Неверный формат или дата: &lt;i&gt;{esc(line)}&lt;/i&gt;")
+            continue
+
+        team_home_raw, team_away_raw, dt = parsed
+
+        chat_home = find_best_chat(team_home_raw, chats)
+        chat_away = find_best_chat(team_away_raw, chats)
+
+        if not chat_home:
+            errors.append(f"Строка {index}: Команда «{esc(team_home_raw)}» не найдена в базе.")
+            continue
+        if not chat_away:
+            errors.append(f"Строка {index}: Команда «{esc(team_away_raw)}» не найдена в базе.")
+            continue
+
+        await add_match(
+            team_home_chat_id=chat_home["chat_id"],
+            team_home_name=chat_home["name"],
+            team_away_chat_id=chat_away["chat_id"],
+            team_away_name=chat_away["name"],
+            match_time=dt,
+            server_name=srv_name,
+            server_ip=srv_ip,
+            server_port=srv_port,
+            server_password=srv_password,
+        )
+        success_count += 1
+
+    await state.clear()
+
+    report = [
+        f"✅ &lt;b&gt;Пакетное добавление завершено!&lt;/b&gt;",
+        f"Успешно создано матчей: &lt;b&gt;{success_count}&lt;/b&gt;\n"
+    ]
+
+    if errors:
+        report.append("⚠️ &lt;b&gt;Ошибки при обработке строк:&lt;/b&gt;")
+        if len(errors) &gt; 25:
+            report.extend(errors[:25])
+            report.append(f"...и еще {len(errors) - 25} ошибок.")
+        else:
+            report.extend(errors)
+
+    await message.answer("\n".join(report), reply_markup=admin_main_menu())
+
+
+# ------------------------------------------------
 
 
 @panel_router.callback_query(F.data == "adm:list_matches")
@@ -2180,7 +2444,7 @@ async def cb_list_matches(call: CallbackQuery):
         await call.answer()
         return
     await call.message.edit_text(
-        "📅 <b>Ближайшие матчи</b> (МСК):",
+        "📅 &lt;b&gt;Ближайшие матчи&lt;/b&gt; (МСК):",
         reply_markup=matches_list_kb(matches),
     )
     await call.answer()
@@ -2195,12 +2459,12 @@ async def cb_match_card(call: CallbackQuery):
         return
     local_time = m["match_time"].astimezone(MSK)
     text = (
-        f"🆚 <b>{esc(m['team_home_name'])} — {esc(m['team_away_name'])}</b>\n"
+        f"🆚 &lt;b&gt;{esc(m['team_home_name'])} — {esc(m['team_away_name'])}&lt;/b&gt;\n"
         f"🕒 {local_time.strftime('%d.%m.%Y %H:%M')} МСК\n\n"
         f"🖥 {esc(m['server_name'])}\n"
-        f"🌐 IP: <code>{esc(m['server_ip'])}</code>\n"
-        f"🔌 Port: <code>{esc(m['server_port'])}</code>\n"
-        f"🔑 Password: <code>{esc(m['server_password'])}</code>\n\n"
+        f"🌐 IP: &lt;code&gt;{esc(m['server_ip'])}&lt;/code&gt;\n"
+        f"🔌 Port: &lt;code&gt;{esc(m['server_port'])}&lt;/code&gt;\n"
+        f"🔑 Password: &lt;code&gt;{esc(m['server_password'])}&lt;/code&gt;\n\n"
         f"🔔 45 мин: {'✅' if m['notified_45'] else '⏳'}   "
         f"🔔 15 мин: {'✅' if m['notified_15'] else '⏳'}"
     )
@@ -2217,14 +2481,14 @@ async def cb_delete_match(call: CallbackQuery):
     if not matches:
         await call.message.edit_text("📅 Ближайших матчей нет.", reply_markup=back_to_menu_kb())
         return
-    await call.message.edit_text("📅 <b>Ближайшие матчи:</b>", reply_markup=matches_list_kb(matches))
+    await call.message.edit_text("📅 &lt;b&gt;Ближайшие матчи:&lt;/b&gt;", reply_markup=matches_list_kb(matches))
 
 
 @panel_router.callback_query(F.data == "adm:add_channel")
 async def cb_add_channel(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddChannel.waiting_id)
     await call.message.edit_text(
-        "📡 <b>Привязка канала</b>\n\n1️⃣ Пришлите <b>ID канала</b> (например, -1001234567890):",
+        "📡 &lt;b&gt;Привязка канала&lt;/b&gt;\n\n1️⃣ Пришлите &lt;b&gt;ID канала&lt;/b&gt; (например, -1001234567890):",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -2239,7 +2503,7 @@ async def process_channel_id(message: Message, state: FSMContext):
         return
     await state.update_data(channel_id=channel_id)
     await state.set_state(AddChannel.waiting_title)
-    await message.answer("✏️ Пришлите <b>название</b> канала:")
+    await message.answer("✏️ Пришлите &lt;b&gt;название&lt;/b&gt; канала:")
 
 
 @panel_router.message(AddChannel.waiting_title)
@@ -2298,8 +2562,8 @@ async def cb_list_channels(call: CallbackQuery):
     for ch in channels:
         linked = await get_linked_chats(ch["channel_id"])
         names = ", ".join(esc(c["name"]) for c in linked) or "—"
-        lines.append(f"📡 <b>{esc(ch['title'])}</b> (<code>{ch['channel_id']}</code>)\n   ↳ чаты: {names}")
-    await call.message.edit_text("🔗 <b>Каналы:</b>\n\n" + "\n\n".join(lines), reply_markup=back_to_menu_kb())
+        lines.append(f"📡 &lt;b&gt;{esc(ch['title'])}&lt;/b&gt; (&lt;code&gt;{ch['channel_id']}&lt;/code&gt;)\n   ↳ чаты: {names}")
+    await call.message.edit_text("🔗 &lt;b&gt;Каналы:&lt;/b&gt;\n\n" + "\n\n".join(lines), reply_markup=back_to_menu_kb())
     await call.answer()
 
 
@@ -2307,7 +2571,7 @@ async def cb_list_channels(call: CallbackQuery):
 async def cb_ban_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(BanPlayer.waiting_target)
     await call.message.edit_text(
-        "🚫 <b>Бан игрока</b>\n\n1️⃣ Пришлите TG ID или @username игрока:",
+        "🚫 &lt;b&gt;Бан игрока&lt;/b&gt;\n\n1️⃣ Пришлите TG ID или @username игрока:",
         reply_markup=back_to_menu_kb(),
     )
     await call.answer()
@@ -2341,7 +2605,7 @@ async def process_ban_league(call: CallbackQuery, state: FSMContext):
     league = call.data.split(":")[1]
     await state.update_data(ban_league=league)
     await state.set_state(BanPlayer.waiting_reason)
-    await call.message.edit_text(f"Выбрана лига: <b>{league}</b>\n\n3️⃣ Укажите причину бана:")
+    await call.message.edit_text(f"Выбрана лига: &lt;b&gt;{league}&lt;/b&gt;\n\n3️⃣ Укажите причину бана:")
     await call.answer()
 
 
@@ -2372,11 +2636,11 @@ async def process_ban_duration(call: CallbackQuery, state: FSMContext, bot: Bot)
     dur_text = "навсегда" if until is None else until.astimezone(MSK).strftime("%d.%m.%Y %H:%M МСК")
 
     ban_notice = (
-        f"🚫 <b>Вы были забанены!</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🛡 <b>Лига:</b> {league}\n"
-        f"✏️ <b>Причина:</b> {esc(reason)}\n"
-        f"⏱ <b>Срок бана:</b> {dur_text}\n\n"
-        f"<i>При возникновении вопросов обратитесь к администрации.</i>"
+        f"🚫 &lt;b&gt;Вы были забанены!&lt;/b&gt;\n━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🛡 &lt;b&gt;Лига:&lt;/b&gt; {league}\n"
+        f"✏️ &lt;b&gt;Причина:&lt;/b&gt; {esc(reason)}\n"
+        f"⏱ &lt;b&gt;Срок бана:&lt;/b&gt; {dur_text}\n\n"
+        f"&lt;i&gt;При возникновении вопросов обратитесь к администрации.&lt;/i&gt;"
     )
     try:
         await bot.send_message(target_id, ban_notice)
@@ -2384,8 +2648,8 @@ async def process_ban_duration(call: CallbackQuery, state: FSMContext, bot: Bot)
         logging.warning(f"Не удалось отправить уведомление о бане пользователю {target_id}: {e}")
 
     await call.message.edit_text(
-        f"✅ Игрок <code>{target_id}</code> забанен.\n"
-        f"Лига: <b>{league}</b>\n"
+        f"✅ Игрок &lt;code&gt;{target_id}&lt;/code&gt; забанен.\n"
+        f"Лига: &lt;b&gt;{league}&lt;/b&gt;\n"
         f"Причина: {esc(reason)}\n"
         f"Срок: {dur_text}",
         reply_markup=admin_main_menu(),
@@ -2403,8 +2667,8 @@ async def cb_list_bans(call: CallbackQuery):
     lines = []
     for b in bans:
         until = "навсегда" if not b["until"] else b["until"].astimezone(MSK).strftime("%d.%m.%Y %H:%M МСК")
-        lines.append(f"🚫 #{b['id']} | ID: <code>{b['tg_id']}</code> [{b['league']}] — {esc(b['reason'])} (до {until})")
-    await call.message.edit_text("📋 <b>Активные баны:</b>\n\n" + "\n".join(lines), reply_markup=bans_list_kb(bans))
+        lines.append(f"🚫 #{b['id']} | ID: &lt;code&gt;{b['tg_id']}&lt;/code&gt; [{b['league']}] — {esc(b['reason'])} (до {until})")
+    await call.message.edit_text("📋 &lt;b&gt;Активные баны:&lt;/b&gt;\n\n" + "\n".join(lines), reply_markup=bans_list_kb(bans))
     await call.answer()
 
 
@@ -2417,7 +2681,7 @@ async def cb_unban(call: CallbackQuery):
     if not bans:
         await call.message.edit_text("📋 Активных банов нет.", reply_markup=back_to_menu_kb())
         return
-    await call.message.edit_text("📋 <b>Активные баны:</b>", reply_markup=bans_list_kb(bans))
+    await call.message.edit_text("📋 &lt;b&gt;Активные баны:&lt;/b&gt;", reply_markup=bans_list_kb(bans))
 
 
 # =========================================================
@@ -2449,11 +2713,11 @@ async def dm_start(message: Message, bot: Bot):
     if active_ban:
         until = "навсегда" if not active_ban["until"] else active_ban["until"].astimezone(MSK).strftime("%d.%m.%Y %H:%M МСК")
         ban_text = (
-            f"🚫 <b>У вас активный бан в лиге!</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🛡 <b>Лига:</b> {active_ban['league']}\n"
-            f"✏️ <b>Причина:</b> {esc(active_ban['reason'])}\n"
-            f"⏱ <b>Срок бана:</b> {until}\n\n"
-            f"<i>Вы не можете пользоваться возможностями бота, пока действует бан.</i>"
+            f"🚫 &lt;b&gt;У вас активный бан в лиге!&lt;/b&gt;\n━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🛡 &lt;b&gt;Лига:&lt;/b&gt; {active_ban['league']}\n"
+            f"✏️ &lt;b&gt;Причина:&lt;/b&gt; {esc(active_ban['reason'])}\n"
+            f"⏱ &lt;b&gt;Срок бана:&lt;/b&gt; {until}\n\n"
+            f"&lt;i&gt;Вы не можете пользоваться возможностями бота, пока действует бан.&lt;/i&gt;"
         )
         await message.answer(ban_text)
         return
@@ -2472,15 +2736,15 @@ async def show_user_captain_application(target, app):
     created = app["created_at"].astimezone(MSK).strftime("%d.%m.%Y %H:%M МСК")
 
     text = (
-        f"📋 <b>Ваша заявка на капитана ({esc(app['season'])} сезон):</b>\n"
+        f"📋 &lt;b&gt;Ваша заявка на капитана ({esc(app['season'])} сезон):&lt;/b&gt;\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 <b>Игрок (TG):</b> {esc(app['full_name'])} ({user_tag})\n\n"
-        f"🏷 <b>Ваш Nickname:</b> {esc(app['nickname'])}\n"
-        f"⏰ <b>Ваши часы:</b> {esc(app['hours'])}\n"
-        f"📜 <b>Ваш Опыт:</b> {esc(app['experience'])}\n"
-        f"🛡 <b>Ваша команда:</b> {esc(app['team_name'])}\n\n"
-        f"🕒 <b>Подана:</b> {created}\n\n"
-        "<i>Вы можете отредактировать или удалить свою заявку ниже.</i>"
+        f"👤 &lt;b&gt;Игрок (TG):&lt;/b&gt; {esc(app['full_name'])} ({user_tag})\n\n"
+        f"🏷 &lt;b&gt;Ваш Nickname:&lt;/b&gt; {esc(app['nickname'])}\n"
+        f"⏰ &lt;b&gt;Ваши часы:&lt;/b&gt; {esc(app['hours'])}\n"
+        f"📜 &lt;b&gt;Ваш Опыт:&lt;/b&gt; {esc(app['experience'])}\n"
+        f"🛡 &lt;b&gt;Ваша команда:&lt;/b&gt; {esc(app['team_name'])}\n\n"
+        f"🕒 &lt;b&gt;Подана:&lt;/b&gt; {created}\n\n"
+        "&lt;i&gt;Вы можете отредактировать или удалить свою заявку ниже.&lt;/i&gt;"
     )
     if isinstance(target, Message):
         await target.answer(text, reply_markup=captain_app_user_kb())
@@ -2503,8 +2767,8 @@ async def cb_cap_apply_start(call: CallbackQuery, state: FSMContext):
     await state.update_data(cap_season=season)
     await state.set_state(ApplyCaptain.waiting_nickname)
     await call.message.answer(
-        f"📝 <b>Подача заявки на капитана ({esc(season)} сезон)</b>\n\n"
-        "1️⃣ Введите ваш <b>Nickname</b>:"
+        f"📝 &lt;b&gt;Подача заявки на капитана ({esc(season)} сезон)&lt;/b&gt;\n\n"
+        "1️⃣ Введите ваш &lt;b&gt;Nickname&lt;/b&gt;:"
     )
     await call.answer()
 
@@ -2515,7 +2779,7 @@ async def process_app_nickname(message: Message, state: FSMContext):
     await state.update_data(cap_nickname=nickname)
     await state.set_state(ApplyCaptain.waiting_hours)
     await message.answer(
-        "2️⃣ Укажите <b>Ваши часы</b>:"
+        "2️⃣ Укажите &lt;b&gt;Ваши часы&lt;/b&gt;:"
     )
 
 
@@ -2525,7 +2789,7 @@ async def process_app_hours(message: Message, state: FSMContext):
     await state.update_data(cap_hours=hours)
     await state.set_state(ApplyCaptain.waiting_experience)
     await message.answer(
-        "3️⃣ Опишите <b>Ваш Опыт</b>:"
+        "3️⃣ Опишите &lt;b&gt;Ваш Опыт&lt;/b&gt;:"
     )
 
 
@@ -2535,7 +2799,7 @@ async def process_app_experience(message: Message, state: FSMContext):
     await state.update_data(cap_experience=experience)
     await state.set_state(ApplyCaptain.waiting_team_name)
     await message.answer(
-        "4️⃣ Укажите <b>Вашу команду</b>:"
+        "4️⃣ Укажите &lt;b&gt;Вашу команду&lt;/b&gt;:"
     )
 
 
@@ -2565,7 +2829,7 @@ async def process_app_team_name(message: Message, state: FSMContext):
         team_name=team_name,
     )
 
-    await message.answer("✅ <b>Ваша заявка успешно отправлена администрации!</b>\n")
+    await message.answer("✅ &lt;b&gt;Ваша заявка успешно отправлена администрации!&lt;/b&gt;\n")
     await show_user_captain_application(message, app)
 
 
@@ -2578,8 +2842,8 @@ async def cb_cap_apply_edit(call: CallbackQuery, state: FSMContext):
     await state.update_data(cap_season=season)
     await state.set_state(ApplyCaptain.waiting_nickname)
     await call.message.edit_text(
-        f"✏️ <b>Редактирование заявки на капитана ({esc(season)} сезон)</b>\n\n"
-        "1️⃣ Введите ваш <b>Nickname</b>:"
+        f"✏️ &lt;b&gt;Редактирование заявки на капитана ({esc(season)} сезон)&lt;/b&gt;\n\n"
+        "1️⃣ Введите ваш &lt;b&gt;Nickname&lt;/b&gt;:"
     )
     await call.answer()
 
@@ -2591,7 +2855,7 @@ async def cb_cap_apply_delete_confirm(call: CallbackQuery):
     kb.button(text="❌ Отмена", callback_data="profile:menu")
     kb.adjust(1)
     await call.message.edit_text(
-        "⚠️ <b>Вы уверены, что хотите удалить свою заявку на капитана?</b>",
+        "⚠️ &lt;b&gt;Вы уверены, что хотите удалить свою заявку на капитана?&lt;/b&gt;",
         reply_markup=kb.as_markup(),
     )
     await call.answer()
@@ -2613,7 +2877,7 @@ async def cmd_myhistory(message: Message):
 async def show_user_history(target_message_or_call, tg_id: int):
     history = await get_player_history(tg_id)
     if not history:
-        text = "📜 <b>Ваша история команд пуста.</b>\n Вы ещё не состояли ни в одной команде."
+        text = "📜 &lt;b&gt;Ваша история команд пуста.&lt;/b&gt;\n Вы ещё не состояли ни в одной команде."
     else:
         lines = []
         for h in history:
@@ -2624,9 +2888,9 @@ async def show_user_history(target_message_or_call, tg_id: int):
             else:
                 period = f"{j_date} — по н.в."
 
-            lines.append(f"🛡 <b>{esc(h['team_name'])}</b> [{h['league']}] ({period})")
+            lines.append(f"🛡 &lt;b&gt;{esc(h['team_name'])}&lt;/b&gt; [{h['league']}] ({period})")
 
-        text = "📜 <b>Ваша история выступлений в командах:</b>\n━━━━━━━━━━━━━━━━━━━\n\n" + "\n".join(lines)
+        text = "📜 &lt;b&gt;Ваша история выступлений в командах:&lt;/b&gt;\n━━━━━━━━━━━━━━━━━━━\n\n" + "\n".join(lines)
 
     kb = InlineKeyboardBuilder()
     kb.button(text="🏠 В профиль", callback_data="profile:menu")
@@ -2664,11 +2928,11 @@ async def cb_prompt_steamid(call: CallbackQuery, state: FSMContext):
         return
     await state.set_state(SetProfile.waiting_steamid)
     await call.message.answer(
-        "🎮 <b>Привязка SteamID</b>\n\n"
-        "Отправьте ваш <b>SteamID</b> (например: <code>76561198000000000</code> или кастомный никнейм).\n\n"
-        "⚠️ <b>ВНИМАНИЕ:</b>\n"
-        "1. Отправлять нужно <b>ТОЛЬКО SteamID</b>, а не ссылку на профиль steam!\n"
-        "2. Привязать SteamID можно <b>ТОЛЬКО 1 РАЗ</b>! Будьте внимательны."
+        "🎮 &lt;b&gt;Привязка SteamID&lt;/b&gt;\n\n"
+        "Отправьте ваш &lt;b&gt;SteamID&lt;/b&gt; (например: &lt;code&gt;76561198000000000&lt;/code&gt; или кастомный никнейм).\n\n"
+        "⚠️ &lt;b&gt;ВНИМАНИЕ:&lt;/b&gt;\n"
+        "1. Отправлять нужно &lt;b&gt;ТОЛЬКО SteamID&lt;/b&gt;, а не ссылку на профиль steam!\n"
+        "2. Привязать SteamID можно &lt;b&gt;ТОЛЬКО 1 РАЗ&lt;/b&gt;! Будьте внимательны."
     )
     await call.answer()
 
@@ -2688,9 +2952,9 @@ async def process_set_steamid(message: Message, state: FSMContext, bot: Bot):
 
     if not is_valid_steam_id(steam_id):
         await message.answer(
-            "❌ <b>Некорректный формат SteamID!</b>\n\n"
-            "Не отправляйте ссылку на профиль Steam (например, <code>https://steamcommunity.com/...</code>).\n"
-            "Пришлите только сам <b>SteamID</b> (например: <code>76561198000000000</code>) или кастомный идентификатор:\n\n"
+            "❌ &lt;b&gt;Некорректный формат SteamID!&lt;/b&gt;\n\n"
+            "Не отправляйте ссылку на профиль Steam (например, &lt;code&gt;https://steamcommunity.com/...&lt;/code&gt;).\n"
+            "Пришлите только сам &lt;b&gt;SteamID&lt;/b&gt; (например: &lt;code&gt;76561198000000000&lt;/code&gt;) или кастомный идентификатор:\n\n"
             "Попробуйте ещё раз:"
         )
         return
@@ -2708,16 +2972,16 @@ async def process_set_steamid(message: Message, state: FSMContext, bot: Bot):
     player = await get_player(tg_id)
     active_rec = await get_active_recruitment()
     text = await build_profile_text(player)
-    await message.answer("✅ <b>SteamID успешно привязан!</b> VPS подхватит обновление в течение ~30 секунд.\n\n" + text, reply_markup=profile_menu_kb(player, active_rec))
+    await message.answer("✅ &lt;b&gt;SteamID успешно привязан!&lt;/b&gt; VPS подхватит обновление в течение ~30 секунд.\n\n" + text, reply_markup=profile_menu_kb(player, active_rec))
 
 
 @dm_router.callback_query(F.data == "profile:nickname")
 async def cb_prompt_nickname(call: CallbackQuery, state: FSMContext):
     await state.set_state(SetProfile.waiting_nickname)
     await call.message.answer(
-        "✏️ <b>Укажите ваш Ник и Игровой номер</b>\n\n"
-        "Формат строго: <code>Nick #Number</code>\n"
-        "Пример: <code>Ovechkin #8</code> или <code>McDavid #97</code>"
+        "✏️ &lt;b&gt;Укажите ваш Ник и Игровой номер&lt;/b&gt;\n\n"
+        "Формат строго: &lt;code&gt;Nick #Number&lt;/code&gt;\n"
+        "Пример: &lt;code&gt;Ovechkin #8&lt;/code&gt; или &lt;code&gt;McDavid #97&lt;/code&gt;"
     )
     await call.answer()
 
@@ -2728,9 +2992,9 @@ async def process_set_nickname(message: Message, state: FSMContext, bot: Bot):
 
     if not NICKNAME_PATTERN.match(nickname):
         await message.answer(
-            "❌ <b>Неверный формат никнейма!</b>\n\n"
+            "❌ &lt;b&gt;Неверный формат никнейма!&lt;/b&gt;\n\n"
             "Необходимо ввести ник и номер через решётку (#).\n"
-            "Пример: <code>Ovechkin #8</code> или <code>Crosby #87</code>\n\n"
+            "Пример: &lt;code&gt;Ovechkin #8&lt;/code&gt; или &lt;code&gt;Crosby #87&lt;/code&gt;\n\n"
             "Попробуйте ещё раз:"
         )
         return
@@ -2744,10 +3008,10 @@ async def process_set_nickname(message: Message, state: FSMContext, bot: Bot):
     player = await get_player(message.from_user.id)
     active_rec = await get_active_recruitment()
     text = await build_profile_text(player)
-    await message.answer("✅ <b>Никнейм и номер сохранены!</b>\n\n" + text, reply_markup=profile_menu_kb(player, active_rec))
+    await message.answer("✅ &lt;b&gt;Никнейм и номер сохранены!&lt;/b&gt;\n\n" + text, reply_markup=profile_menu_kb(player, active_rec))
 
 
-async def build_roster_text(bot: Bot, chat) -> str:
+async def build_roster_text(bot: Bot, chat) -&gt; str:
     roster = await get_team_roster(chat["chat_id"])
     logo = f"{chat['logo_emoji']} " if chat["logo_emoji"] else ""
     league = chat["league"]
@@ -2757,16 +3021,16 @@ async def build_roster_text(bot: Bot, chat) -> str:
         for p in roster:
             name = esc(p["nickname"]) if p["nickname"] else esc(p["first_name"] or "Без имени")
             steam = esc(p["steam_id"]) if p["steam_id"] else "❌ Не привязан"
-            user_tag = f"@{esc(p['username'])}" if p["username"] else "—"
+            user_tag = f" (@{esc(p['username'])})" if p["username"] else "—"
 
             is_cap = await is_player_captain(bot, p["tg_id"], league)
-            cap_tag = " 👑 <b>(Капитан)</b>" if is_cap else ""
+            cap_tag = " 👑 &lt;b&gt;(Капитан)&lt;/b&gt;" if is_cap else ""
 
-            lines.append(f"• <b>{name}</b>{cap_tag} | Telegram: {user_tag} (SteamID: <code>{steam}</code>)")
+            lines.append(f"• &lt;b&gt;{name}&lt;/b&gt;{cap_tag} | Telegram: {user_tag} (SteamID: &lt;code&gt;{steam}&lt;/code&gt;)")
         body = "\n".join(lines)
     else:
-        body = "<i>В составе пока нет зарегистрированных игроков</i>"
-    return f"{logo}<b>Состав команды {esc(chat['name'])} [{league}]:</b>\n━━━━━━━━━━━━━━━━━━━\n\n{body}"
+        body = "&lt;i&gt;В составе пока нет зарегистрированных игроков&lt;/i&gt;"
+    return f"{logo}&lt;b&gt;Состав команды {esc(chat['name'])} [{league}]:&lt;/b&gt;\n━━━━━━━━━━━━━━━━━━━\n\n{body}"
 
 
 @dm_router.callback_query(F.data == "profile:teams")
@@ -2775,7 +3039,7 @@ async def cb_show_teams(call: CallbackQuery):
     if not chats:
         await call.answer("Команд пока нет.", show_alert=True)
         return
-    await call.message.edit_text("🏒 <b>Выберите команду:</b>", reply_markup=teams_list_kb(chats))
+    await call.message.edit_text("🏒 &lt;b&gt;Выберите команду:&lt;/b&gt;", reply_markup=teams_list_kb(chats))
     await call.answer()
 
 
@@ -2797,7 +3061,7 @@ async def cmd_teams(message: Message):
     if not chats:
         await message.answer("Команд пока нет.")
         return
-    await message.answer("🏒 <b>Выберите команду:</b>", reply_markup=teams_list_kb(chats))
+    await message.answer("🏒 &lt;b&gt;Выберите команду:&lt;/b&gt;", reply_markup=teams_list_kb(chats))
 
 
 @dm_router.callback_query(F.data.startswith("chooseteam:"))
@@ -2809,7 +3073,7 @@ async def cb_choose_team(call: CallbackQuery, bot: Bot):
         await set_player_team(tg_id, chosen_chat_id)
         chat_info = await get_chat(chosen_chat_id)
         name = chat_info["name"] if chat_info else "команда"
-        await call.message.edit_text(f"✅ Вы выбрали основную команду: <b>{esc(name)}</b>")
+        await call.message.edit_text(f"✅ Вы выбрали основную команду: &lt;b&gt;{esc(name)}&lt;/b&gt;")
         await call.answer()
         return
 
@@ -2832,7 +3096,7 @@ async def cb_choose_team(call: CallbackQuery, bot: Bot):
     await set_player_team(tg_id, chosen_chat_id)
     chat_info = await get_chat(chosen_chat_id)
     name = chat_info["name"] if chat_info else "команда"
-    await call.message.edit_text(f"✅ Вы выбрали основную команду: <b>{esc(name)}</b>")
+    await call.message.edit_text(f"✅ Вы выбрали основную команду: &lt;b&gt;{esc(name)}&lt;/b&gt;")
     await call.answer()
 
 
@@ -2857,7 +3121,7 @@ async def send_and_autodelete(bot: Bot, chat_id: int, text: str, delay: int = WA
     asyncio.create_task(_delete_later())
 
 
-async def is_chat_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
+async def is_chat_admin(bot: Bot, chat_id: int, user_id: int) -&gt; bool:
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in ("administrator", "creator")
@@ -2884,7 +3148,7 @@ async def cmd_checkplayers(message: Message, bot: Bot):
 
     status_msg = await message.answer("🔄 Запущена ручная проверка составов (с обновлением username)...")
     await sync_all_rosters(bot, refresh_usernames=True)
-    await status_msg.edit_text("✅ <b>Проверка составов всех команд успешно завершена!</b>")
+    await status_msg.edit_text("✅ &lt;b&gt;Проверка составов всех команд успешно завершена!&lt;/b&gt;")
 
 
 @team_chat_router.message()
@@ -2938,7 +3202,7 @@ async def team_chat_gate(message: Message, bot: Bot):
 
     if not await is_exception(tg_id):
         chat_ids = await get_player_chat_ids(tg_id)
-        if len(chat_ids) >= 2:
+        if len(chat_ids) &gt;= 2:
             try:
                 await message.delete()
             except Exception:
@@ -3056,7 +3320,7 @@ async def sync_all_rosters(bot: Bot, refresh_usernames: bool = False):
                 member = await bot.get_chat_member(chat_id, tg_id)
                 is_in_chat = member.status in ("member", "administrator", "creator")
             except Exception as e:
-                # Не смогли проверить — не трогаем игрока
+                # Не смогли проверить — не трогаем игрок
                 logging.debug(f"Не удалось проверить {tg_id} в чате {chat_id}: {e}")
                 continue
 
@@ -3085,7 +3349,7 @@ async def sync_all_rosters(bot: Bot, refresh_usernames: bool = False):
 
             await asyncio.sleep(0.01)
 
-    if refresh_usernames and updated_usernames > 0:
+    if refresh_usernames and updated_usernames &gt; 0:
         logging.info(f"🔄 Обновлено username у {updated_usernames} игроков")
 
 
@@ -3099,7 +3363,7 @@ async def scheduled_roster_sync_loop(bot: Bot):
         # Ищем следующий час, кратный 4
         next_hour = ((now.hour // 4) + 1) * 4
         target = now.replace(minute=0, second=0, microsecond=0)
-        if next_hour >= 24:
+        if next_hour &gt;= 24:
             target = (target + timedelta(days=1)).replace(hour=next_hour - 24)
         else:
             target = target.replace(hour=next_hour)
@@ -3135,8 +3399,8 @@ async def steam_reminder_loop(bot: Bot):
                 kb.button(text="🔗 Привязать SteamID", callback_data="profile:steamid")
 
                 text = (
-                    f"⚠️ <b>Напоминание о привязке SteamID!</b>\n\n"
-                    f"Вы состоите в команде <b>{esc(team_name)}</b>, но до сих пор не привязали ваш <b>SteamID</b>.\n"
+                    f"⚠️ &lt;b&gt;Напоминание о привязке SteamID!&lt;/b&gt;\n\n"
+                    f"Вы состоите в команде &lt;b&gt;{esc(team_name)}&lt;/b&gt;, но до сих пор не привязали ваш &lt;b&gt;SteamID&lt;/b&gt;.\n"
                     "Пожалуйста, нажмите кнопку ниже и укажите свой SteamID, чтобы играть в лигах без ограничений!"
                 )
                 try:
@@ -3167,17 +3431,17 @@ async def send_daily_steam_report(bot: Bot):
             name = esc(p["nickname"]) if p["nickname"] else esc(p["first_name"] or "Без имени")
             user_tag = f" (@{esc(p['username'])})" if p["username"] else ""
             if p["steam_id"]:
-                linked_players.append(f"• {name}{user_tag} (<code>{esc(p['steam_id'])}</code>)")
+                linked_players.append(f"• {name}{user_tag} (&lt;code&gt;{esc(p['steam_id'])}&lt;/code&gt;)")
             else:
                 unlinked_players.append(f"• {name}{user_tag}")
 
-        text = f"📊 <b>Ежедневный отчёт по привязке SteamID [{chat['league']}]</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
+        text = f"📊 &lt;b&gt;Ежедневный отчёт по привязке SteamID [{chat['league']}]&lt;/b&gt;\n━━━━━━━━━━━━━━━━━━━\n\n"
 
-        text += "✅ <b>Игроки кто привязал steamid:</b>\n"
-        text += "\n".join(linked_players) if linked_players else "<i>Никто не привязал</i>"
+        text += "✅ &lt;b&gt;Игроки кто привязал steamid:&lt;/b&gt;\n"
+        text += "\n".join(linked_players) if linked_players else "&lt;i&gt;Никто не привязал&lt;/i&gt;"
 
-        text += "\n\n❌ <b>Игроки кто не привязал:</b>\n"
-        text += "\n".join(unlinked_players) if unlinked_players else "<i>Все игроки привязали! 🎉</i>"
+        text += "\n\n❌ &lt;b&gt;Игроки кто не привязал:&lt;/b&gt;\n"
+        text += "\n".join(unlinked_players) if unlinked_players else "&lt;i&gt;Все игроки привязали! 🎉&lt;/i&gt;"
 
         try:
             await bot.send_message(chat_id, text)
@@ -3189,7 +3453,7 @@ async def daily_report_loop(bot: Bot):
     while True:
         now = datetime.now(MSK)
         target = now.replace(hour=14, minute=30, second=0, microsecond=0)
-        if now >= target:
+        if now &gt;= target:
             target += timedelta(days=1)
 
         seconds_until_target = (target - now).total_seconds()
