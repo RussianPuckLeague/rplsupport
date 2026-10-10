@@ -1915,7 +1915,8 @@ async def cb_del_chat_confirm(call: CallbackQuery):
 
 @panel_router.callback_query(F.data.startswith("adm:del_chat_execute:"))
 async def cb_del_chat_execute(call: CallbackQuery):
-    chat_id = int(call.data.split(":")[3])
+    # ИСПРАВЛЕНО: используем индекс 2 вместо 3
+    chat_id = int(call.data.split(":")[2])
     chat = await get_chat(chat_id)
     if not chat:
         await call.answer("Команда не найдена", show_alert=True)
