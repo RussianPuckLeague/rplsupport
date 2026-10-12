@@ -61,6 +61,7 @@ GIST_FILENAME = "whitelist.json"
 MSK = ZoneInfo("Europe/Moscow")
 
 NICKNAME_PATTERN = re.compile(r"^.+\s+#\d+$")
+VALID_POSITIONS = {"Вратарь", "Полевой"}
 
 
 def is_valid_steam_id(raw_input: str) -> bool:
@@ -146,6 +147,7 @@ async def init_pool():
                 first_name TEXT,
                 steam_id TEXT UNIQUE,
                 nickname TEXT,
+                position TEXT,
                 team_chat_id BIGINT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -218,6 +220,7 @@ async def init_pool():
             "ALTER TABLE bans ADD COLUMN IF NOT EXISTS league TEXT NOT NULL DEFAULT 'ALL'",
             "ALTER TABLE captain_applications ADD COLUMN IF NOT EXISTS nickname TEXT",
             "ALTER TABLE captain_applications ADD COLUMN IF NOT EXISTS hours TEXT",
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS position TEXT",
         ]
         for cmd in alter_commands:
             try:
@@ -567,6 +570,11 @@ async def set_player_nickname(tg_id: int, nickname: str):
         await conn.execute("UPDATE players SET nickname = $1 WHERE tg_id = $2", nickname, tg_id)
 
 
+async def set_player_position(tg_id: int, position: str):
+    async with _pool.acquire() as conn:
+        await conn.execute("UPDATE players SET position = $1 WHERE tg_id = $2", position, tg_id)
+
+
 async def set_player_team(tg_id: int, chat_id: int | None):
     changed = False
     async with _pool.acquire() as conn:
@@ -650,7 +658,10 @@ async def get_team_roster(chat_id: int):
             """
             SELECT p.* FROM players p
             WHERE p.team_chat_id = $1
-            ORDER BY p.nickname NULLS LAST, p.first_name
+            ORDER BY 
+                CASE WHEN p.position = 'Вратарь' THEN 1 ELSE 2 END,
+                p.nickname NULLS LAST, 
+                p.first_name
             """,
             chat_id,
         )
@@ -843,6 +854,9 @@ async def build_profile_text(player) -> str:
     nickname = f"<code>{esc(player['nickname'])}</code>" if player["nickname"] else "❌ <i>не указан (формат: Nick #00)</i>"
     steam_id = f"<code>{esc(player['steam_id'])}</code>" if player["steam_id"] else "❌ <i>не привязан</i>"
 
+    pos_icon = "🥅" if player["position"] == "Вратарь" else ("🏒" if player["position"] == "Полевой" else "❌")
+    pos_text = f"{pos_icon} <b>{esc(player['position'])}</b>" if player["position"] else "❌ <i>не выбрана (обязательно!)</i>"
+
     if player["team_chat_id"]:
         chat = await get_chat(player["team_chat_id"])
         logo = f"{chat['logo_emoji']} " if chat and chat["logo_emoji"] else ""
@@ -857,10 +871,11 @@ async def build_profile_text(player) -> str:
         "🏒 <b>Профиль игрока RPL / FPHL</b>\n"
         "━━━━━━━━━━━━━━━━━━━\n\n"
         f"🏷 <b>Никнейм и Номер:</b> {nickname}\n"
+        f"🧤 <b>Основная позиция:</b> {pos_text}\n"
         f"🎮 <b>SteamID:</b> {steam_id}\n"
         f"🛡 <b>Команда:</b> {team_name}\n"
         f"💬 <b>Telegram:</b> {username}\n\n"
-        "<i>Для игр в лигах необходимо заполнить никнейм с номером и привязать SteamID!</i>"
+        "<i>Для участия в лигах необходимо указать Ник с номером, выбрать Позицию и привязать SteamID!</i>"
     )
 
 
@@ -1023,9 +1038,18 @@ def exceptions_list_kb(exceptions) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def position_choice_kb(prefix: str = "pos") -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🥅 Вратарь", callback_data=f"{prefix}:Вратарь")
+    kb.button(text="🏒 Полевой", callback_data=f"{prefix}:Полевой")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
 def admin_player_card_kb(tg_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Изменить Никнейм", callback_data=f"adm_pedit:nick:{tg_id}")
+    kb.button(text="🧤 Изменить Позицию", callback_data=f"adm_pedit:pos:{tg_id}")
     kb.button(text="🎮 Изменить SteamID", callback_data=f"adm_pedit:steam:{tg_id}")
     kb.button(text="🏒 Изменить Команду", callback_data=f"adm_pedit:team:{tg_id}")
     kb.button(text="⬅️ В меню", callback_data="adm:menu")
@@ -1132,6 +1156,10 @@ def profile_menu_kb(player=None, active_recruitment=None) -> InlineKeyboardMarku
     if active_recruitment:
         season_text = active_recruitment['season']
         kb.button(text=f"📝 Подать заявку на капитана RPL {season_text} сезон", callback_data="cap_apply:start")
+    
+    pos_btn_text = f"🧤 Позиция: {player['position']}" if (player and player.get("position")) else "🧤 Выбрать позицию (Обязательно!)"
+    kb.button(text=pos_btn_text, callback_data="profile:pos_select")
+    
     if not (player and player["steam_id"]):
         kb.button(text="🔗 Привязать SteamID", callback_data="profile:steamid")
     kb.button(text="✏️ Указать Ник и Номер", callback_data="profile:nickname")
@@ -1453,7 +1481,7 @@ async def cb_rebuild_whitelist(call: CallbackQuery):
     asyncio.create_task(rebuild_whitelist_file())
     await call.message.edit_text(
         "✅ <b>Обновление whitelist запущено в фоне.</b>\n"
-        "Проверь логи Railway через 5–10 секунд, чтобы увидеть результат.",
+        "Проверь логи через 5–10 секунд, чтобы увидеть результат.",
         reply_markup=back_to_menu_kb(),
     )
 
@@ -1473,10 +1501,11 @@ async def cb_admin_all_players(call: CallbackQuery):
     lines = []
     for p in players:
         nick = esc(p["nickname"]) if p["nickname"] else esc(p["first_name"] or "Игрок")
+        pos = f" [{p['position']}]" if p.get("position") else " [Позиция не выбрана]"
         team = f"[{p['team_league']}] {esc(p['team_name'])}" if p["team_name"] else "Free Agent"
         steam = f"<code>{esc(p['steam_id'])}</code>" if p["steam_id"] else "❌"
         user = f"@{esc(p['username'])}" if p["username"] else f"ID:{p['tg_id']}"
-        lines.append(f"👤 <b>{nick}</b> ({user})\n   ↳ Команда: {team} | SteamID: {steam}")
+        lines.append(f"👤 <b>{nick}</b>{pos} ({user})\n   ↳ Команда: {team} | SteamID: {steam}")
 
     total_pages = (total + limit - 1) // limit
     text = f"👥 <b>Все зарегистрированные игроки ({total}):</b> (Стр. {page + 1}/{total_pages})\n━━━━━━━━━━━━━━━━━━━\n\n" + "\n\n".join(lines)
@@ -1726,6 +1755,38 @@ async def process_edit_profile_target(message: Message, state: FSMContext):
     await show_admin_player_card(message, target_id)
 
 
+@panel_router.callback_query(F.data.startswith("adm_pedit:pos:"))
+async def cb_edit_p_pos_prompt(call: CallbackQuery):
+    tg_id = int(call.data.split(":")[2])
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🥅 Вратарь", callback_data=f"adm_pos_set:{tg_id}:Вратарь")
+    kb.button(text="🏒 Полевой", callback_data=f"adm_pos_set:{tg_id}:Полевой")
+    kb.button(text="⬅️ Назад", callback_data=f"adm_pedit:back:{tg_id}")
+    kb.adjust(2, 1)
+    await call.message.edit_text(
+        f"🧤 <b>Выберите позицию для игрока (ID: <code>{tg_id}</code>):</b>",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@panel_router.callback_query(F.data.startswith("adm_pos_set:"))
+async def cb_admin_set_pos(call: CallbackQuery):
+    parts = call.data.split(":")
+    tg_id = int(parts[1])
+    pos = parts[2]
+    await set_player_position(tg_id, pos)
+    await call.answer(f"Позиция изменена на: {pos}", show_alert=True)
+    await show_admin_player_card(call, tg_id)
+
+
+@panel_router.callback_query(F.data.startswith("adm_pedit:back:"))
+async def cb_admin_pedit_back(call: CallbackQuery):
+    tg_id = int(call.data.split(":")[2])
+    await show_admin_player_card(call, tg_id)
+    await call.answer()
+
+
 @panel_router.callback_query(F.data.startswith("adm_pedit:nick:"))
 async def cb_edit_p_nick_prompt(call: CallbackQuery, state: FSMContext):
     tg_id = int(call.data.split(":")[2])
@@ -1915,7 +1976,6 @@ async def cb_del_chat_confirm(call: CallbackQuery):
 
 @panel_router.callback_query(F.data.startswith("adm:del_chat_execute:"))
 async def cb_del_chat_execute(call: CallbackQuery):
-    # ИСПРАВЛЕНО: используем индекс 2 вместо 3
     chat_id = int(call.data.split(":")[2])
     chat = await get_chat(chat_id)
     if not chat:
@@ -2252,41 +2312,91 @@ async def cb_pick_server(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(text, reply_markup=admin_main_menu())
 
 
-# ---------- ДОБАВЛЕНИЕ МАТЧЕЙ ИЗ ФАЙЛА ----------
+# ---------- ДОБАВЛЕНИЕ МАТЧЕЙ ИЗ ФАЙЛА (ИСПРАВЛЕНО И УЛУЧШЕНО) ----------
+
+def parse_flexible_dt(time_str: str) -> datetime | None:
+    """Универсальный парсер даты и времени по МСК."""
+    clean = re.sub(r"(?i)\s*(?:мск|msk)\b", "", time_str).strip()
+    clean = clean.replace("/", ".").replace("-", ".")
+    clean = re.sub(r"\s+", " ", clean)
+
+    formats = (
+        "%H:%M %d.%m.%Y",
+        "%H.%M %d.%m.%Y",
+        "%d.%m.%Y %H:%M",
+        "%d.%m.%Y %H.%M",
+        "%H:%M %d.%m.%y",
+        "%H.%M %d.%m.%y",
+        "%d.%m.%y %H:%M",
+        "%d.%m.%y %H.%M",
+        "%Y.%m.%d %H:%M",
+        "%Y.%m.%d %H.%M",
+        "%H:%M %d.%m",
+        "%H.%M %d.%m",
+        "%d.%m %H:%M",
+        "%d.%m %H.%M",
+    )
+
+    current_year = datetime.now(MSK).year
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(clean, fmt)
+            if "%y" not in fmt and "%Y" not in fmt:
+                parsed = parsed.replace(year=current_year)
+            return parsed.replace(tzinfo=MSK)
+        except ValueError:
+            continue
+    return None
+
 
 def parse_match_line(line: str):
+    """
+    Разбирает строку вида:
+    Команда 1 - Команда 2 | 20:30 15.10.2026
+    или Команда 1 — Команда 2 | 19.30 01.11
+    """
     line = line.strip()
-    if not line or "-" not in line or "|" not in line:
+    if not line:
         return None
-    try:
-        teams_part, time_part = line.split("|", 1)
-        teams = [t.strip() for t in teams_part.split("-", 1)]
-        if len(teams) != 2:
-            return None
-        team_home, team_away = teams[0], teams[1]
-        time_str = time_part.strip()
 
-        dt = None
-        for fmt in ("%H:%M %d.%m.%Y", "%d.%m.%Y %H:%M", "%H:%M %d.%m.%y", "%d.%m.%y %H:%M"):
-            try:
-                dt = datetime.strptime(time_str, fmt)
-                break
-            except ValueError:
-                continue
-        if not dt:
-            return None
-        return team_home, team_away, dt
-    except Exception:
+    # Ищем разделитель времени (| или запятая в конце)
+    parts = None
+    if "|" in line:
+        parts = line.split("|", 1)
+    elif "," in line and re.search(r"\d{1,2}[:.]\d{2}", line):
+        parts = line.rsplit(",", 1)
+
+    if not parts or len(parts) != 2:
         return None
+
+    teams_part, time_part = parts[0].strip(), parts[1].strip()
+
+    # Разделитель между командами: дефис, тире, длинное тире, vs
+    match_teams = re.split(r"\s+(?:[-–—]|vs|VS)\s+", teams_part, maxsplit=1)
+    if len(match_teams) != 2:
+        # Попробуем без пробелов вокруг тире
+        match_teams = re.split(r"[-–—]", teams_part, maxsplit=1)
+        if len(match_teams) != 2:
+            return None
+
+    team_home = match_teams[0].strip()
+    team_away = match_teams[1].strip()
+
+    if not team_home or not team_away:
+        return None
+
+    dt = parse_flexible_dt(time_part)
+    if not dt:
+        return None
+
+    return team_home, team_away, dt
 
 
 def find_best_chat(team_name: str, chats) -> dict | None:
     name_clean = team_name.strip().lower()
-    # 1. Exact match
     for c in chats:
         if c["name"].strip().lower() == name_clean:
             return c
-    # 2. Substring match
     for c in chats:
         c_name = c["name"].strip().lower()
         if c_name in name_clean or name_clean in c_name:
@@ -2341,8 +2451,9 @@ async def cb_file_pick_server(call: CallbackQuery, state: FSMContext):
         "Шаг 2: Отправьте мне файл <b>.txt</b> со списком матчей.\n\n"
         "Каждая строка должна быть в формате:\n"
         "<code>Команда1 - Команда2 | Время</code>\n\n"
-        "Например:\n"
-        "<code>Северсталь - Локомотив | 17:00 01.11.2026</code>",
+        "Примеры:\n"
+        "<code>Северсталь - Локомотив | 20:30 15.11.2026</code>\n"
+        "<code>Спартак — ЦСКА | 19:00 15.11</code>",
         reply_markup=back_to_menu_kb()
     )
     await call.answer()
@@ -2373,7 +2484,7 @@ async def process_matches_file(message: Message, state: FSMContext, bot: Bot):
             file_buffer.seek(0)
             content = file_buffer.read().decode("windows-1251")
         except Exception:
-            await message.answer("❌ Ошибка кодировки файла. Пожалуйста, используйте кодировку UTF-8.")
+            await message.answer("❌ Ошибка кодировки файла. Пожалуйста, сохраните файл в UTF-8.")
             return
 
     chats = await get_chats()
@@ -2389,7 +2500,7 @@ async def process_matches_file(message: Message, state: FSMContext, bot: Bot):
 
         parsed = parse_match_line(line)
         if not parsed:
-            errors.append(f"Строка {index}: Неверный формат или дата: <i>{esc(line)}</i>")
+            errors.append(f"Строка {index}: Не распознан формат матча/времени: <i>{esc(line)}</i>")
             continue
 
         team_home_raw, team_away_raw, dt = parsed
@@ -2701,7 +2812,6 @@ async def sync_player_chats_and_team(bot: Bot, tg_id: int, notify: bool = True):
             else:
                 await remove_player_chat(tg_id, chat["chat_id"])
         except Exception as e:
-            # Не смогли проверить — не трогаем запись
             logging.debug(f"Не удалось проверить членство {tg_id} в {chat['chat_id']}: {e}")
     await recompute_player_team(bot, tg_id, notify=notify)
 
@@ -2726,9 +2836,47 @@ async def dm_start(message: Message, bot: Bot):
 
     await sync_player_chats_and_team(bot, tg_id, notify=False)
     player = await get_player(tg_id)
+
+    # Обязательный выбор позиции, если не выбрана
+    if not player or not player["position"]:
+        await message.answer(
+            "🏒 <b>Добро пожаловать в бота лиг RPL / FPHL!</b>\n\n"
+            "⚠️ <b>Обязательный шаг:</b> выберите вашу основную игровую позицию:",
+            reply_markup=position_choice_kb("reg_pos")
+        )
+        return
+
     active_rec = await get_active_recruitment()
     text = await build_profile_text(player)
     await message.answer(text, reply_markup=profile_menu_kb(player, active_rec))
+
+
+@dm_router.callback_query(F.data.startswith("reg_pos:"))
+async def cb_reg_pos(call: CallbackQuery):
+    pos = call.data.split(":")[1]
+    if pos not in VALID_POSITIONS:
+        await call.answer("Неверная позиция", show_alert=True)
+        return
+
+    await set_player_position(call.from_user.id, pos)
+    await call.answer(f"✅ Выбрана позиция: {pos}!", show_alert=True)
+
+    player = await get_player(call.from_user.id)
+    active_rec = await get_active_recruitment()
+    text = await build_profile_text(player)
+    await call.message.edit_text(
+        f"✅ <b>Основная позиция «{pos}» успешно установлена!</b>\n\n" + text,
+        reply_markup=profile_menu_kb(player, active_rec)
+    )
+
+
+@dm_router.callback_query(F.data == "profile:pos_select")
+async def cb_profile_pos_select(call: CallbackQuery):
+    await call.message.edit_text(
+        "🧤 <b>Выберите вашу основную позицию:</b>",
+        reply_markup=position_choice_kb("reg_pos")
+    )
+    await call.answer()
 
 
 # ---------- ПОДАЧА И УПРАВЛЕНИЕ ЗАЯВКОЙ КАПИТАНА ----------
@@ -3023,12 +3171,13 @@ async def build_roster_text(bot: Bot, chat) -> str:
         for p in roster:
             name = esc(p["nickname"]) if p["nickname"] else esc(p["first_name"] or "Без имени")
             steam = esc(p["steam_id"]) if p["steam_id"] else "❌ Не привязан"
+            pos_label = f" [{p['position']}]" if p.get("position") else " [Без позиции]"
             user_tag = f" (@{esc(p['username'])})" if p["username"] else "—"
 
             is_cap = await is_player_captain(bot, p["tg_id"], league)
             cap_tag = " 👑 <b>(Капитан)</b>" if is_cap else ""
 
-            lines.append(f"• <b>{name}</b>{cap_tag} | Telegram: {user_tag} (SteamID: <code>{steam}</code>)")
+            lines.append(f"• <b>{name}</b>{pos_label}{cap_tag} | Telegram: {user_tag} (SteamID: <code>{steam}</code>)")
         body = "\n".join(lines)
     else:
         body = "<i>В составе пока нет зарегистрированных игроков</i>"
@@ -3166,6 +3315,16 @@ async def team_chat_gate(message: Message, bot: Bot):
     tg_id = message.from_user.id
     full_name = esc(message.from_user.full_name)
 
+    # Немедленно регистрируем/обновляем привязку игрока к данному чату
+    await upsert_player_basic(tg_id, message.from_user.username, message.from_user.full_name)
+    await add_player_chat(tg_id, message.chat.id)
+
+    player = await get_player(tg_id)
+    # Если игрок числится без команды (Free Agent) или в другой команде — привязываем его
+    if player and player["team_chat_id"] != message.chat.id and not await is_exception(tg_id):
+        await recompute_player_team(bot, tg_id, notify=False)
+        player = await get_player(tg_id)
+
     if await is_chat_admin(bot, message.chat.id, tg_id):
         return
 
@@ -3182,15 +3341,19 @@ async def team_chat_gate(message: Message, bot: Bot):
         )
         return
 
-    player = await get_player(tg_id)
-    if not player:
-        await upsert_player_basic(tg_id, message.from_user.username, message.from_user.full_name)
-        player = await get_player(tg_id)
-    elif player["username"] != message.from_user.username or player["first_name"] != message.from_user.full_name:
-        # Игрок сменил @username или имя — обновляем в БД
-        await upsert_player_basic(tg_id, message.from_user.username, message.from_user.full_name)
-        logging.info(f"🔄 Обновлён профиль {tg_id}: @{message.from_user.username}")
+    # Проверка позиции (ОБЯЗАТЕЛЬНО)
+    if not player or not player["position"]:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await send_and_autodelete(
+            bot, message.chat.id,
+            f"⚠️ {full_name}, вы не выбрали позицию (Вратарь / Полевой)!\nПерейдите в ЛС бота и сделайте выбор.",
+        )
+        return
 
+    # Проверка никнейма и SteamID
     if not player["steam_id"] or not player["nickname"]:
         try:
             await message.delete()
@@ -3217,13 +3380,11 @@ async def team_chat_gate(message: Message, bot: Bot):
 
 
 async def recompute_player_team(bot: Bot, tg_id: int, notify: bool = False):
-    """Пересчитывает team_chat_id игрока.
-
-    Логика:
+    """
+    Пересчитывает team_chat_id игрока:
       - 0 чатов  → team_chat_id = None (Free Agent)
-      - 1 чат    → team_chat_id = этот чат
-      - 2+ чатов → если текущая команда среди них — оставляем её (не сбрасываем!),
-                   иначе — сбрасываем и (при notify=True) предлагаем выбрать.
+      - 1 чат    → team_chat_id = этот чат (Сразу снимает Free Agent)
+      - 2+ чатов → если текущая команда среди них — оставляем, иначе сбрасываем.
     """
     if await is_exception(tg_id):
         return
@@ -3281,10 +3442,18 @@ async def on_team_chat_member_update(update: ChatMemberUpdated, bot: Bot):
     is_member = update.new_chat_member.status in active_statuses
 
     if is_member and not was_member:
+        # Игрок только что вошёл в чат — регистрируем и сразу ставим команду
         await upsert_player_basic(user.id, user.username, user.full_name)
         await add_player_chat(user.id, update.chat.id)
+        
+        # Если игрок не в мультичате-исключении, сразу назначаем команду
+        if not await is_exception(user.id):
+            await set_player_team(user.id, update.chat.id)
+            logging.info(f"🏒 Игроку {user.id} ({user.full_name}) сразу назначена команда {chat['name']} при входе.")
         await recompute_player_team(bot, user.id, notify=True)
+
     elif was_member and not is_member:
+        # Игрок покинул чат
         await remove_player_chat(user.id, update.chat.id)
         await recompute_player_team(bot, user.id, notify=False)
 
@@ -3303,7 +3472,6 @@ async def sync_all_rosters(bot: Bot, refresh_usernames: bool = False):
     if not chats or not known_players:
         return
 
-    # Кэшируем игроков, чтобы не дёргать БД в цикле
     players_map: dict[int, asyncpg.Record] = {}
     if refresh_usernames:
         for tg_id in known_players:
@@ -3322,7 +3490,6 @@ async def sync_all_rosters(bot: Bot, refresh_usernames: bool = False):
                 member = await bot.get_chat_member(chat_id, tg_id)
                 is_in_chat = member.status in ("member", "administrator", "creator")
             except Exception as e:
-                # Не смогли проверить — не трогаем игрока
                 logging.debug(f"Не удалось проверить {tg_id} в чате {chat_id}: {e}")
                 continue
 
@@ -3339,7 +3506,6 @@ async def sync_all_rosters(bot: Bot, refresh_usernames: bool = False):
                     new_first_name = member.user.full_name
                     if p and (p["username"] != new_username or p["first_name"] != new_first_name):
                         await upsert_player_basic(tg_id, new_username, new_first_name)
-                        # локально обновим кэш чтобы не апдейтить в след. чате
                         players_map[tg_id] = dict(p)
                         players_map[tg_id]["username"] = new_username
                         players_map[tg_id]["first_name"] = new_first_name
@@ -3356,13 +3522,8 @@ async def sync_all_rosters(bot: Bot, refresh_usernames: bool = False):
 
 
 async def scheduled_roster_sync_loop(bot: Bot):
-    """
-    Запускает полную проверку составов + обновление username каждый раз
-    в 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 МСК.
-    """
     while True:
         now = datetime.now(MSK)
-        # Ищем следующий час, кратный 4
         next_hour = ((now.hour // 4) + 1) * 4
         target = now.replace(minute=0, second=0, microsecond=0)
         if next_hour >= 24:
@@ -3382,7 +3543,6 @@ async def scheduled_roster_sync_loop(bot: Bot):
         except Exception as e:
             logging.error(f"⚠️ Ошибка плановой проверки составов: {e}")
 
-        # Пауза 60 сек, чтобы не запуститься дважды в ту же минуту
         await asyncio.sleep(60)
 
 
@@ -3431,11 +3591,12 @@ async def send_daily_steam_report(bot: Bot):
 
         for p in roster:
             name = esc(p["nickname"]) if p["nickname"] else esc(p["first_name"] or "Без имени")
+            pos_label = f" [{p['position']}]" if p.get("position") else ""
             user_tag = f" (@{esc(p['username'])})" if p["username"] else ""
             if p["steam_id"]:
-                linked_players.append(f"• {name}{user_tag} (<code>{esc(p['steam_id'])}</code>)")
+                linked_players.append(f"• {name}{pos_label}{user_tag} (<code>{esc(p['steam_id'])}</code>)")
             else:
-                unlinked_players.append(f"• {name}{user_tag}")
+                unlinked_players.append(f"• {name}{pos_label}{user_tag}")
 
         text = f"📊 <b>Ежедневный отчёт по привязке SteamID [{chat['league']}]</b>\n━━━━━━━━━━━━━━━━━━━\n\n"
 
