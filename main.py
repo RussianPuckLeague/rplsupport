@@ -498,6 +498,11 @@ async def delete_match(match_id: int):
         await conn.execute("DELETE FROM matches WHERE id = $1", match_id)
 
 
+async def delete_all_matches():
+    async with _pool.acquire() as conn:
+        await conn.execute("DELETE FROM matches")
+
+
 async def get_matches_due_for(minutes_before: int, column: str):
     query = f"""
         SELECT * FROM matches
@@ -977,9 +982,7 @@ def admin_main_menu() -> InlineKeyboardMarkup:
     kb.button(text="📋 Список команд", callback_data="adm:list_chats")
     kb.button(text="👥 Все игроки", callback_data="adm:all_players:0")
     kb.button(text="✏️ Ред. команду", callback_data="adm:edit_chat")
-    kb.button(text="🆚 Добавить матч", callback_data="adm:add_match")
-    kb.button(text="📂 Добавление матчей (файл)", callback_data="adm:add_matches_file")
-    kb.button(text="📅 Список матчей", callback_data="adm:list_matches")
+    kb.button(text="🏒 Матчи", callback_data="adm:matches_menu")
     kb.button(text="🖥 Добавить сервер", callback_data="adm:add_server")
     kb.button(text="🗄 Список серверов", callback_data="adm:list_servers")
     kb.button(text="📡 Привязать канал", callback_data="adm:add_channel")
@@ -991,6 +994,24 @@ def admin_main_menu() -> InlineKeyboardMarkup:
     kb.button(text="🔄 Сбросить всем SteamID", callback_data="adm:reset_steam_confirm")
     kb.button(text="🔁 Обновить whitelist", callback_data="adm:rebuild_wl")
     kb.adjust(2)
+    return kb.as_markup()
+
+
+def matches_menu_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить матч", callback_data="adm:add_match")
+    kb.button(text="📂 Добавить матчи .txt", callback_data="adm:add_matches_file")
+    kb.button(text="📅 Просмотр матчей", callback_data="adm:list_matches")
+    kb.button(text="🗑 Удалить матч", callback_data="adm:del_match_menu")
+    kb.button(text="🔥 Удалить все матчи", callback_data="adm:del_all_matches_confirm")
+    kb.button(text="⬅️ В меню", callback_data="adm:menu")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def back_to_matches_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ В меню матчей", callback_data="adm:matches_menu")
     return kb.as_markup()
 
 
@@ -1092,15 +1113,16 @@ def matches_list_kb(matches) -> InlineKeyboardMarkup:
         local_time = m["match_time"].astimezone(MSK)
         label = f"{m['team_home_name']} 🆚 {m['team_away_name']} — {local_time.strftime('%d.%m %H:%M')} МСК"
         kb.button(text=label, callback_data=f"adm:match:{m['id']}")
-    kb.button(text="⬅️ В меню", callback_data="adm:menu")
+    kb.button(text="⬅️ В меню матчей", callback_data="adm:matches_menu")
     kb.adjust(1)
     return kb.as_markup()
 
 
 def match_card_kb(match_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🗑 Удалить матч", callback_data=f"adm:del_match:{match_id}")
+    kb.button(text="🗑 Удалить этот матч", callback_data=f"adm:del_match_exec:{match_id}")
     kb.button(text="⬅️ К списку матчей", callback_data="adm:list_matches")
+    kb.button(text="🏒 В меню матчей", callback_data="adm:matches_menu")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -1337,6 +1359,61 @@ async def cb_menu(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.message.edit_text("🔐 <b>Админ-панель RPL / FPHL</b>", reply_markup=admin_main_menu())
     await call.answer()
+
+
+# ---------- МЕНЮ МАТЧЕЙ ----------
+
+@panel_router.callback_query(F.data == "adm:matches_menu")
+async def cb_matches_menu(call: CallbackQuery):
+    await call.message.edit_text("🏒 <b>Управление матчами</b>\n\nВыберите нужный пункт:", reply_markup=matches_menu_kb())
+    await call.answer()
+
+
+@panel_router.callback_query(F.data == "adm:del_match_menu")
+async def cb_del_match_menu(call: CallbackQuery):
+    matches = await get_upcoming_matches()
+    if not matches:
+        await call.message.edit_text("📅 Список матчей пуст.", reply_markup=back_to_matches_kb())
+        await call.answer()
+        return
+    kb = InlineKeyboardBuilder()
+    for m in matches:
+        local_time = m["match_time"].astimezone(MSK)
+        label = f"🗑 {m['team_home_name']} 🆚 {m['team_away_name']} — {local_time.strftime('%d.%m %H:%M')} МСК"
+        kb.button(text=label, callback_data=f"adm:del_match_exec:{m['id']}")
+    kb.button(text="⬅️ В меню матчей", callback_data="adm:matches_menu")
+    kb.adjust(1)
+    await call.message.edit_text("🗑 <b>Выберите матч для удаления:</b>", reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@panel_router.callback_query(F.data.startswith("adm:del_match_exec:"))
+async def cb_del_match_exec(call: CallbackQuery):
+    match_id = int(call.data.split(":")[2])
+    await delete_match(match_id)
+    await call.answer("🗑 Матч удалён", show_alert=True)
+    await cb_del_match_menu(call)
+
+
+@panel_router.callback_query(F.data == "adm:del_all_matches_confirm")
+async def cb_del_all_matches_confirm(call: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔥 Да, удалить ВСЕ матчи", callback_data="adm:del_all_matches_exec")
+    kb.button(text="❌ Отмена", callback_data="adm:matches_menu")
+    kb.adjust(1)
+    await call.message.edit_text(
+        "⚠️ <b>ВНИМАНИЕ! Вы действительно хотите удалить ВСЕ матчи из базы данных?</b>\n\n"
+        "Это действие невозможно отменить!",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@panel_router.callback_query(F.data == "adm:del_all_matches_exec")
+async def cb_del_all_matches_exec(call: CallbackQuery):
+    await delete_all_matches()
+    await call.answer("🗑 Все матчи успешно удалены!", show_alert=True)
+    await call.message.edit_text("✅ <b>Все матчи удалены из базы данных!</b>", reply_markup=matches_menu_kb())
 
 
 # ---------- НАБОР КАПИТАНОВ (АДМИНКА) ----------
@@ -2134,14 +2211,14 @@ async def process_server_password(message: Message, state: FSMContext):
         required = ("team1_id", "team1_name", "team2_id", "team2_name", "match_time")
         if not all(key in data for key in required):
             await state.clear()
-            await message.answer("❌ Данные матча утеряны.", reply_markup=admin_main_menu())
+            await message.answer("❌ Данные матча утеряны.", reply_markup=matches_menu_kb())
             return
 
         try:
             match_time = datetime.fromisoformat(data["match_time"])
         except ValueError:
             await state.clear()
-            await message.answer("❌ Неверный формат даты.", reply_markup=admin_main_menu())
+            await message.answer("❌ Неверный формат даты.", reply_markup=matches_menu_kb())
             return
 
         match = await add_match(
@@ -2165,7 +2242,7 @@ async def process_server_password(message: Message, state: FSMContext):
             f"🖥 {esc(match['server_name'])}\n\n"
             "Уведомления за 45 и 15 минут будут отправлены автоматически! 🔔"
         )
-        await message.answer(text, reply_markup=admin_main_menu())
+        await message.answer(text, reply_markup=matches_menu_kb())
         return
 
     await state.clear()
@@ -2204,7 +2281,7 @@ async def cb_add_match(call: CallbackQuery, state: FSMContext):
     if len(chats) < 2:
         await call.message.edit_text(
             "❌ Нужно как минимум 2 добавленных чата для создания матча.",
-            reply_markup=back_to_menu_kb(),
+            reply_markup=back_to_matches_kb(),
         )
         await call.answer()
         return
@@ -2284,7 +2361,7 @@ async def cb_pick_server(call: CallbackQuery, state: FSMContext):
     required = ("team1_id", "team1_name", "team2_id", "team2_name", "match_time")
     if not all(key in data for key in required):
         await state.clear()
-        await call.message.edit_text("❌ Данные матча утеряны.", reply_markup=back_to_menu_kb())
+        await call.message.edit_text("❌ Данные матча утеряны.", reply_markup=matches_menu_kb())
         return
 
     match_time = datetime.fromisoformat(data["match_time"])
@@ -2309,72 +2386,83 @@ async def cb_pick_server(call: CallbackQuery, state: FSMContext):
         f"🖥 {esc(match['server_name'])}\n\n"
         "Напоминание и раскатка отправятся автоматически 🔔"
     )
-    await call.message.edit_text(text, reply_markup=admin_main_menu())
+    await call.message.edit_text(text, reply_markup=matches_menu_kb())
 
 
-# ---------- ДОБАВЛЕНИЕ МАТЧЕЙ ИЗ ФАЙЛА (ИСПРАВЛЕНО И УЛУЧШЕНО) ----------
+# ---------- ДОБАВЛЕНИЕ МАТЧЕЙ ИЗ ФАЙЛА (ИСПРАВЛЕННЫЙ И НАДЕЖНЫЙ ПАРСЕР) ----------
 
 def parse_flexible_dt(time_str: str) -> datetime | None:
-    """Универсальный парсер даты и времени по МСК."""
-    clean = re.sub(r"(?i)\s*(?:мск|msk)\b", "", time_str).strip()
-    clean = clean.replace("/", ".").replace("-", ".")
-    clean = re.sub(r"\s+", " ", clean)
+    """Точный регулярный парсер даты и времени по МСК."""
+    if not time_str or not time_str.strip():
+        return None
 
-    formats = (
-        "%H:%M %d.%m.%Y",
-        "%H.%M %d.%m.%Y",
-        "%d.%m.%Y %H:%M",
-        "%d.%m.%Y %H.%M",
-        "%H:%M %d.%m.%y",
-        "%H.%M %d.%m.%y",
-        "%d.%m.%y %H:%M",
-        "%d.%m.%y %H.%M",
-        "%Y.%m.%d %H:%M",
-        "%Y.%m.%d %H.%M",
-        "%H:%M %d.%m",
-        "%H.%M %d.%m",
-        "%d.%m %H:%M",
-        "%d.%m %H.%M",
-    )
+    raw = time_str.strip().lower()
+    raw = re.sub(r"\b(мск|msk|в|г|года|год)\b", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
 
-    current_year = datetime.now(MSK).year
-    for fmt in formats:
-        try:
-            parsed = datetime.strptime(clean, fmt)
-            if "%y" not in fmt and "%Y" not in fmt:
-                parsed = parsed.replace(year=current_year)
-            return parsed.replace(tzinfo=MSK)
-        except ValueError:
-            continue
-    return None
+    now_msk = datetime.now(MSK)
+    year = now_msk.year
+    month = now_msk.month
+    day = now_msk.day
+    hour = None
+    minute = None
+
+    # 1. Точный поиск времени (ЧЧ:ММ, ЧЧ.ММ, ЧЧ-ММ)
+    time_match = re.search(r"\b([01]?\d|2[0-3])[:.-]([0-5]\d)\b", raw)
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2))
+        raw = raw[:time_match.start()] + " " + raw[time_match.end():]
+
+    # 2. Точный поиск даты (ДД.ММ.ГГГГ, ДД.ММ.ГГ, ДД.ММ, ДД/ММ)
+    date_match = re.search(r"\b([0-2]?\d|3[01])[./-](0?\d|1[0-2])(?:[./-](\d{2,4}))?\b", raw)
+    if date_match:
+        day = int(date_match.group(1))
+        month = int(date_match.group(2))
+        if date_match.group(3):
+            y_str = date_match.group(3)
+            if len(y_str) == 2:
+                year = 2000 + int(y_str)
+            else:
+                year = int(y_str)
+
+    if hour is None or minute is None:
+        return None
+
+    try:
+        dt = datetime(year, month, day, hour, minute, tzinfo=MSK)
+        return dt
+    except ValueError:
+        return None
 
 
 def parse_match_line(line: str):
     """
-    Разбирает строку вида:
+    Разбирает строку файла .txt:
     Команда 1 - Команда 2 | 20:30 15.10.2026
-    или Команда 1 — Команда 2 | 19.30 01.11
+    Команда 1 — Команда 2 | 19.30 01.11
     """
     line = line.strip()
     if not line:
         return None
 
-    # Ищем разделитель времени (| или запятая в конце)
     parts = None
     if "|" in line:
         parts = line.split("|", 1)
     elif "," in line and re.search(r"\d{1,2}[:.]\d{2}", line):
         parts = line.rsplit(",", 1)
+    else:
+        m_time = re.search(r"(\b([0-2]?\d|3[01])[./-](0?\d|1[0-2]).*|\b([01]?\d|2[0-3])[:.-]([0-5]\d).*)$", line)
+        if m_time:
+            parts = [line[:m_time.start()].strip(), line[m_time.start():].strip()]
 
     if not parts or len(parts) != 2:
         return None
 
     teams_part, time_part = parts[0].strip(), parts[1].strip()
 
-    # Разделитель между командами: дефис, тире, длинное тире, vs
     match_teams = re.split(r"\s+(?:[-–—]|vs|VS)\s+", teams_part, maxsplit=1)
     if len(match_teams) != 2:
-        # Попробуем без пробелов вокруг тире
         match_teams = re.split(r"[-–—]", teams_part, maxsplit=1)
         if len(match_teams) != 2:
             return None
@@ -2410,7 +2498,7 @@ async def cb_add_matches_file_start(call: CallbackQuery, state: FSMContext):
     if not servers:
         await call.message.edit_text(
             "❌ Сначала добавьте хотя бы один сервер в разделе «Добавить сервер».",
-            reply_markup=back_to_menu_kb()
+            reply_markup=back_to_matches_kb()
         )
         await call.answer()
         return
@@ -2419,7 +2507,7 @@ async def cb_add_matches_file_start(call: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardBuilder()
     for s in servers:
         kb.button(text=f"🖥 {s['name']}", callback_data=f"file_srv:{s['id']}")
-    kb.button(text="⬅️ В меню", callback_data="adm:menu")
+    kb.button(text="⬅️ В меню матчей", callback_data="adm:matches_menu")
     kb.adjust(1)
 
     await call.message.edit_text(
@@ -2454,7 +2542,7 @@ async def cb_file_pick_server(call: CallbackQuery, state: FSMContext):
         "Примеры:\n"
         "<code>Северсталь - Локомотив | 20:30 15.11.2026</code>\n"
         "<code>Спартак — ЦСКА | 19:00 15.11</code>",
-        reply_markup=back_to_menu_kb()
+        reply_markup=back_to_matches_kb()
     )
     await call.answer()
 
@@ -2543,7 +2631,7 @@ async def process_matches_file(message: Message, state: FSMContext, bot: Bot):
         else:
             report.extend(errors)
 
-    await message.answer("\n".join(report), reply_markup=admin_main_menu())
+    await message.answer("\n".join(report), reply_markup=matches_menu_kb())
 
 
 # ------------------------------------------------
@@ -2553,7 +2641,7 @@ async def process_matches_file(message: Message, state: FSMContext, bot: Bot):
 async def cb_list_matches(call: CallbackQuery):
     matches = await get_upcoming_matches()
     if not matches:
-        await call.message.edit_text("📅 Ближайших матчей нет.", reply_markup=back_to_menu_kb())
+        await call.message.edit_text("📅 Ближайших матчей нет.", reply_markup=back_to_matches_kb())
         await call.answer()
         return
     await call.message.edit_text(
@@ -2583,18 +2671,6 @@ async def cb_match_card(call: CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=match_card_kb(match_id))
     await call.answer()
-
-
-@panel_router.callback_query(F.data.startswith("adm:del_match:"))
-async def cb_delete_match(call: CallbackQuery):
-    match_id = int(call.data.split(":")[2])
-    await delete_match(match_id)
-    await call.answer("🗑 Матч удалён", show_alert=True)
-    matches = await get_upcoming_matches()
-    if not matches:
-        await call.message.edit_text("📅 Ближайших матчей нет.", reply_markup=back_to_menu_kb())
-        return
-    await call.message.edit_text("📅 <b>Ближайшие матчи:</b>", reply_markup=matches_list_kb(matches))
 
 
 @panel_router.callback_query(F.data == "adm:add_channel")
@@ -2802,7 +2878,6 @@ async def cb_unban(call: CallbackQuery):
 # =========================================================
 
 async def sync_player_chats_and_team(bot: Bot, tg_id: int, notify: bool = True):
-    """Синхронизирует список чатов игрока и пересчитывает его команду."""
     chats = await get_chats()
     for chat in chats:
         try:
@@ -2837,7 +2912,6 @@ async def dm_start(message: Message, bot: Bot):
     await sync_player_chats_and_team(bot, tg_id, notify=False)
     player = await get_player(tg_id)
 
-    # Обязательный выбор позиции, если не выбрана
     if not player or not player["position"]:
         await message.answer(
             "🏒 <b>Добро пожаловать в бота лиг RPL / FPHL!</b>\n\n"
@@ -3315,12 +3389,10 @@ async def team_chat_gate(message: Message, bot: Bot):
     tg_id = message.from_user.id
     full_name = esc(message.from_user.full_name)
 
-    # Немедленно регистрируем/обновляем привязку игрока к данному чату
     await upsert_player_basic(tg_id, message.from_user.username, message.from_user.full_name)
     await add_player_chat(tg_id, message.chat.id)
 
     player = await get_player(tg_id)
-    # Если игрок числится без команды (Free Agent) или в другой команде — привязываем его
     if player and player["team_chat_id"] != message.chat.id and not await is_exception(tg_id):
         await recompute_player_team(bot, tg_id, notify=False)
         player = await get_player(tg_id)
@@ -3341,7 +3413,6 @@ async def team_chat_gate(message: Message, bot: Bot):
         )
         return
 
-    # Проверка позиции (ОБЯЗАТЕЛЬНО)
     if not player or not player["position"]:
         try:
             await message.delete()
@@ -3353,7 +3424,6 @@ async def team_chat_gate(message: Message, bot: Bot):
         )
         return
 
-    # Проверка никнейма и SteamID
     if not player["steam_id"] or not player["nickname"]:
         try:
             await message.delete()
@@ -3380,12 +3450,6 @@ async def team_chat_gate(message: Message, bot: Bot):
 
 
 async def recompute_player_team(bot: Bot, tg_id: int, notify: bool = False):
-    """
-    Пересчитывает team_chat_id игрока:
-      - 0 чатов  → team_chat_id = None (Free Agent)
-      - 1 чат    → team_chat_id = этот чат (Сразу снимает Free Agent)
-      - 2+ чатов → если текущая команда среди них — оставляем, иначе сбрасываем.
-    """
     if await is_exception(tg_id):
         return
 
@@ -3404,7 +3468,6 @@ async def recompute_player_team(bot: Bot, tg_id: int, notify: bool = False):
             await set_player_team(tg_id, only_chat)
         return
 
-    # 2+ чатов
     if current_team not in chat_ids and current_team is not None:
         await set_player_team(tg_id, None)
 
@@ -3442,18 +3505,15 @@ async def on_team_chat_member_update(update: ChatMemberUpdated, bot: Bot):
     is_member = update.new_chat_member.status in active_statuses
 
     if is_member and not was_member:
-        # Игрок только что вошёл в чат — регистрируем и сразу ставим команду
         await upsert_player_basic(user.id, user.username, user.full_name)
         await add_player_chat(user.id, update.chat.id)
         
-        # Если игрок не в мультичате-исключении, сразу назначаем команду
         if not await is_exception(user.id):
             await set_player_team(user.id, update.chat.id)
             logging.info(f"🏒 Игроку {user.id} ({user.full_name}) сразу назначена команда {chat['name']} при входе.")
         await recompute_player_team(bot, user.id, notify=True)
 
     elif was_member and not is_member:
-        # Игрок покинул чат
         await remove_player_chat(user.id, update.chat.id)
         await recompute_player_team(bot, user.id, notify=False)
 
@@ -3463,10 +3523,6 @@ async def on_team_chat_member_update(update: ChatMemberUpdated, bot: Bot):
 # =========================================================
 
 async def sync_all_rosters(bot: Bot, refresh_usernames: bool = False):
-    """
-    Полная проверка всех игроков во всех командных чатах.
-    Если refresh_usernames=True — также обновляет username/first_name из Telegram.
-    """
     known_players = await get_all_known_player_ids()
     chats = await get_chats()
     if not chats or not known_players:
@@ -3740,7 +3796,6 @@ async def main():
     await init_pool()
     logging.info("✅ База данных подключена и готова к работе")
 
-    # Однократная синхронизация whitelist при старте
     if GITHUB_TOKEN and GIST_ID:
         asyncio.create_task(rebuild_whitelist_file())
         logging.info("✅ Запущена фоновая синхронизация whitelist при старте бота")
